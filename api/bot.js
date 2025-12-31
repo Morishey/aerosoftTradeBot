@@ -1,19 +1,29 @@
-import TelegramBot from "node-telegram-bot-api";
-import axios from "axios";
+// ===============================
+// IMPORTS
+// ===============================
+const TelegramBot = require("node-telegram-bot-api");
+const axios = require("axios");
 
-const TOKEN = process.env.TELEGRAM_TOKEN; // Telegram bot token
-const WEBHOOK_URL = process.env.WEBHOOK_URL; // e.g. https://your-vercel-app.vercel.app
+// ===============================
+// TELEGRAM TOKEN (from ENV)
+// ===============================
+const TOKEN = process.env.TELEGRAM_TOKEN;
+if (!TOKEN) throw new Error("Missing TELEGRAM_TOKEN environment variable!");
 
-// Initialize bot without polling
+// ===============================
+// INITIALIZE BOT (WEBHOOK MODE)
+// ===============================
 const bot = new TelegramBot(TOKEN);
-bot.setWebHook(`${WEBHOOK_URL}/api/bot`);
+bot.setWebHook(`${process.env.VERCEL_URL}/api/bot`); // Vercel will handle requests at this path
 
-// In-memory user data (demo only)
+// ===============================
+// USER BALANCES AND ACCOUNTS
+// ===============================
 const users = {};
 
-// -------------------------------
+// ===============================
 // DEFAULT KEYBOARD
-// -------------------------------
+// ===============================
 const defaultKeyboard = {
   reply_markup: {
     keyboard: [
@@ -28,15 +38,13 @@ const defaultKeyboard = {
   },
 };
 
-// -------------------------------
+// ===============================
 // FETCH COINGECKO NGN RATES
-// -------------------------------
+// ===============================
 async function fetchNgnRates() {
   try {
     const url =
-      "https://api.coingecko.com/api/v3/simple/price" +
-      "?ids=tether,bitcoin,ethereum,solana" +
-      "&vs_currencies=ngn";
+      "https://api.coingecko.com/api/v3/simple/price?ids=tether,bitcoin,ethereum,solana&vs_currencies=ngn";
     const { data } = await axios.get(url);
     return {
       usdt: data.tether.ngn,
@@ -44,15 +52,15 @@ async function fetchNgnRates() {
       eth: data.ethereum.ngn,
       sol: data.solana.ngn,
     };
-  } catch (error) {
-    console.error("CoinGecko fetch error:", error.message);
+  } catch (err) {
+    console.error("CoinGecko fetch error:", err.message);
     return null;
   }
 }
 
-// -------------------------------
+// ===============================
 // INIT USER
-// -------------------------------
+// ===============================
 function initUser(userId) {
   if (!users[userId]) {
     users[userId] = {
@@ -72,9 +80,9 @@ function initUser(userId) {
   }
 }
 
-// -------------------------------
+// ===============================
 // INLINE BUTTONS
-// -------------------------------
+// ===============================
 function tradeButtons(asset) {
   return {
     reply_markup: {
@@ -132,79 +140,68 @@ function cryptoSelectButtons(type) {
   };
 }
 
-// -------------------------------
-// START COMMAND
-// -------------------------------
-bot.onText(/\/start/, (msg) => {
-  initUser(msg.from.id);
-  bot.sendMessage(
-    msg.chat.id,
-    `🚀 <b>WELCOME TO AEROSOFT TRADE</b>\n\nSelect an option below`,
-    { parse_mode: "HTML", ...defaultKeyboard }
-  );
-});
-
-// -------------------------------
-// MESSAGE HANDLER
-// -------------------------------
-bot.on("message", async (msg) => {
+// ===============================
+// HANDLER FOR MESSAGES
+// ===============================
+async function handleMessage(msg) {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
   const text = msg.text;
+
   initUser(userId);
   const u = users[userId];
 
-  // BANK ACCOUNT ENTRY
+  // BANK DETAILS
   if (u.waitingBankDetails) {
     const parts = text.split("|");
     if (parts.length !== 2) {
-      return bot.sendMessage(chatId, "❌ Invalid format. Use ACCOUNT_NUMBER|BANK_NAME\nExample: 0123456789|GT Bank");
+      return bot.sendMessage(chatId, "❌ Invalid format. Use ACCOUNT_NUMBER|BANK_NAME");
     }
     u.bankAccount = { accountNumber: parts[0].trim(), bankName: parts[1].trim() };
     u.waitingBankDetails = false;
     u.waitingWithdrawal = true;
-    return bot.sendMessage(chatId, "✅ Bank account saved!\nEnter withdrawal amount:", { parse_mode: "HTML" });
+    return bot.sendMessage(chatId, "✅ Bank account saved!\nEnter withdrawal amount:");
   }
 
-  // NAIRA WITHDRAWAL INPUT
+  // NAIRA WITHDRAW
   if (u.waitingWithdrawal && u.waitingBuySell === "naira") {
     const amount = parseFloat(text.replace(/,/g, ""));
     if (isNaN(amount) || amount <= 0) return bot.sendMessage(chatId, "❌ Invalid amount");
-    if (amount > u.naira) return bot.sendMessage(chatId, `❌ Balance too low to withdraw ₦${amount.toLocaleString()}`);
+    if (amount > u.naira) return bot.sendMessage(chatId, `❌ Balance too low`);
     u.naira -= amount;
     u.waitingWithdrawal = false;
-    return bot.sendMessage(chatId, `✅ Withdrawal successful!\n₦${amount.toLocaleString()} sent to ${u.bankAccount.accountNumber} - ${u.bankAccount.bankName}`, { parse_mode: "HTML" });
+    return bot.sendMessage(chatId, `✅ Withdrawal successful!\n₦${amount.toLocaleString()} sent to ${u.bankAccount.accountNumber} - ${u.bankAccount.bankName}`);
+  }
+
+  // VIEW RATES
+  if (text === "📊 View Rates") {
+    const rates = await fetchNgnRates();
+    if (!rates) return bot.sendMessage(chatId, "❌ Unable to fetch rates");
+    return bot.sendMessage(
+      chatId,
+      `📊 LIVE CRYPTO RATES (NGN)\nUSDT - ₦${rates.usdt}\nBTC - ₦${rates.btc}\nETH - ₦${rates.eth}\nSOL - ₦${rates.sol}`
+    );
   }
 
   // WALLET HANDLERS
-  if (text === "💰 Naira Wallet") {
-    if (u.naira <= 0) return bot.sendMessage(chatId, `💰 NAIRA WALLET\nBalance: ₦${u.naira.toLocaleString()}\n❌ Balance too low`, { parse_mode: "HTML" });
-    return bot.sendMessage(chatId, `💰 NAIRA WALLET\nBalance: ₦${u.naira.toLocaleString()}`, { parse_mode: "HTML", ...withdrawButton() });
-  }
+  if (text === "💰 Naira Wallet") return bot.sendMessage(chatId, `💰 NAIRA WALLET\nBalance: ₦${u.naira}`, { ...withdrawButton() });
+  if (text === "🌐 USDT Wallet") return bot.sendMessage(chatId, `USDT Wallet: ${u.usdt}`, { ...tradeButtons("usdt") });
+  if (text === "₿ BTC Wallet") return bot.sendMessage(chatId, `BTC Wallet: ${u.btc}`, { ...tradeButtons("btc") });
+  if (text === "💵 ETH Wallet") return bot.sendMessage(chatId, `ETH Wallet: ${u.eth}`, { ...tradeButtons("eth") });
+  if (text === "🟣 SOL Wallet") return bot.sendMessage(chatId, `SOL Wallet: ${u.sol}`, { ...tradeButtons("sol") });
 
-  if (text === "🌐 USDT Wallet") return bot.sendMessage(chatId, `🌐 USDT WALLET\nBalance: ${u.usdt} USDT`, { parse_mode: "HTML", ...tradeButtons("usdt") });
-  if (text === "₿ BTC Wallet") return bot.sendMessage(chatId, `₿ BTC WALLET\nBalance: ${u.btc} BTC`, { parse_mode: "HTML", ...tradeButtons("btc") });
-  if (text === "💵 ETH Wallet") return bot.sendMessage(chatId, `💵 ETH WALLET\nBalance: ${u.eth} ETH`, { parse_mode: "HTML", ...tradeButtons("eth") });
-  if (text === "🟣 SOL Wallet") return bot.sendMessage(chatId, `🟣 SOL WALLET\nBalance: ${u.sol} SOL`, { parse_mode: "HTML", ...tradeButtons("sol") });
+  if (text === "🔄 Swap Crypto") return bot.sendMessage(chatId, "Select swap type", swapTypeButtons());
+  if (text === "ℹ️ How to Use") return bot.sendMessage(chatId, "Use wallets, buy/sell, withdraw, swap crypto, view rates");
+}
 
-  if (text === "🔄 Swap Crypto") return bot.sendMessage(chatId, "Select swap type", { parse_mode: "HTML", ...swapTypeButtons() });
-
-  if (text === "📊 View Rates") {
-    const rates = await fetchNgnRates();
-    if (!rates) return bot.sendMessage(chatId, "❌ Unable to fetch rates. Try again.");
-    return bot.sendMessage(chatId, `📊 LIVE CRYPTO RATES (NGN)\nUSDT - ₦${rates.usdt.toLocaleString()}\nBTC - ₦${rates.btc.toLocaleString()}\nETH - ₦${rates.eth.toLocaleString()}\nSOL - ₦${rates.sol.toLocaleString()}`, { parse_mode: "HTML" });
-  }
-
-  if (text === "ℹ️ How to Use") return bot.sendMessage(chatId, `ℹ️ HOW TO USE\n1️⃣ Wallets\n2️⃣ Buy/Sell crypto\n3️⃣ Withdraw Naira\n4️⃣ Swap crypto\n5️⃣ View rates`, { parse_mode: "HTML" });
-});
-
-// -------------------------------
-// CALLBACK QUERY HANDLER
-// -------------------------------
-bot.on("callback_query", async (query) => {
+// ===============================
+// CALLBACK HANDLER
+// ===============================
+async function handleCallback(query) {
   const chatId = query.message.chat.id;
   const userId = query.from.id;
   const data = query.data;
+
   initUser(userId);
   const u = users[userId];
   const rates = await fetchNgnRates();
@@ -218,73 +215,70 @@ bot.on("callback_query", async (query) => {
     u.waitingSwap = false;
     u.selectedCrypto = null;
     u.swapType = null;
-    return bot.sendMessage(chatId, "❌ Operation cancelled", { parse_mode: "HTML" });
+    return bot.sendMessage(chatId, "❌ Operation cancelled");
   }
 
-  // NAIRA WITHDRAW
+  // NAIRA WITHDRAW BUTTON
   if (data === "withdraw_naira") {
-    if (u.naira <= 0) return bot.sendMessage(chatId, "❌ Balance too low", { parse_mode: "HTML" });
+    if (u.naira <= 0) return bot.sendMessage(chatId, "❌ Balance too low");
     if (!u.bankAccount) {
       u.waitingBankDetails = true;
       return bot.sendMessage(chatId, "🏦 Enter bank details ACCOUNT_NUMBER|BANK_NAME");
     }
     u.waitingWithdrawal = true;
     u.waitingBuySell = "naira";
-    return bot.sendMessage(chatId, "🏦 Enter amount to withdraw:", { parse_mode: "HTML" });
+    return bot.sendMessage(chatId, "🏦 Enter amount to withdraw:");
   }
 
   // BUY/SELL CRYPTO
   if (data.startsWith("sell_")) {
     const asset = data.split("_")[1];
-    if (u[asset] <= 0) return bot.sendMessage(chatId, `❌ Not enough ${asset.toUpperCase()}`, { parse_mode: "HTML" });
-    const nairaValue = u[asset] * rates[asset];
-    u.naira += nairaValue;
+    if (u[asset] <= 0) return bot.sendMessage(chatId, `❌ Not enough ${asset}`);
+    u.naira += u[asset] * rates[asset];
     u[asset] = 0;
-    return bot.sendMessage(chatId, `✅ SOLD ${asset.toUpperCase()}\n₦${nairaValue.toLocaleString()} credited`, { parse_mode: "HTML" });
+    return bot.sendMessage(chatId, `✅ Sold ${asset}`);
   }
 
   if (data.startsWith("buy_")) {
     const asset = data.split("_")[1];
-    const cost = rates[asset];
-    if (u.naira < cost) return bot.sendMessage(chatId, "❌ Insufficient Naira balance", { parse_mode: "HTML" });
-    u.naira -= cost;
+    if (u.naira < rates[asset]) return bot.sendMessage(chatId, `❌ Not enough Naira`);
+    u.naira -= rates[asset];
     u[asset] += 1;
-    return bot.sendMessage(chatId, `✅ BOUGHT 1 ${asset.toUpperCase()}`, { parse_mode: "HTML" });
+    return bot.sendMessage(chatId, `✅ Bought 1 ${asset}`);
   }
 
-  // SWAP TYPE SELECTION
+  // SWAP SELECTION
   if (data === "swap_naira_to_crypto") {
     u.waitingSwap = true;
     u.swapType = "naira_to_crypto";
-    return bot.sendMessage(chatId, "Select crypto to buy:", { parse_mode: "HTML", ...cryptoSelectButtons("buy") });
+    return bot.sendMessage(chatId, "Select crypto to buy:", cryptoSelectButtons("buy"));
   }
-
   if (data === "swap_crypto_to_naira") {
     u.waitingSwap = true;
     u.swapType = "crypto_to_naira";
-    return bot.sendMessage(chatId, "Select crypto to sell:", { parse_mode: "HTML", ...cryptoSelectButtons("sell") });
+    return bot.sendMessage(chatId, "Select crypto to sell:", cryptoSelectButtons("sell"));
   }
 
-  // CRYPTO SELECTION FOR SWAP
-  if (data.startsWith("buy_") && u.waitingSwap && u.swapType === "naira_to_crypto") {
+  // CRYPTO AMOUNT SELECTION FOR SWAP
+  if ((data.startsWith("buy_") && u.waitingSwap && u.swapType === "naira_to_crypto") ||
+      (data.startsWith("sell_") && u.waitingSwap && u.swapType === "crypto_to_naira")) {
     u.selectedCrypto = data.split("_")[1];
-    return bot.sendMessage(chatId, "Enter Naira amount to swap:", { parse_mode: "HTML" });
-  }
-
-  if (data.startsWith("sell_") && u.waitingSwap && u.swapType === "crypto_to_naira") {
-    u.selectedCrypto = data.split("_")[1];
-    return bot.sendMessage(chatId, `Enter ${u.selectedCrypto.toUpperCase()} amount to swap:`, { parse_mode: "HTML" });
-  }
-});
-
-// -------------------------------
-// VERCEL SERVERLESS HANDLER
-// -------------------------------
-export default function handler(req, res) {
-  if (req.method === "POST") {
-    bot.processUpdate(req.body);
-    return res.status(200).send("OK");
-  } else {
-    res.status(200).send("Bot is live");
+    return bot.sendMessage(chatId, "Enter amount:");
   }
 }
+
+// ===============================
+// EXPORT HANDLER FOR VERCEL
+// ===============================
+module.exports = async (req, res) => {
+  if (req.method === "POST") {
+    const body = req.body;
+    if (body.message) await handleMessage(body.message);
+    if (body.callback_query) await handleCallback(body.callback_query);
+    res.status(200).send("OK");
+  } else {
+    res.status(200).send("Telegram bot webhook is running");
+  }
+};
+
+console.log("🤖 Aerosoft Trade Bot ready for Vercel!");
