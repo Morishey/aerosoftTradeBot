@@ -3,22 +3,32 @@
 // ===============================
 const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
+const express = require("express");
 
 // ===============================
-// TELEGRAM TOKEN
+// ENV
 // ===============================
 const TOKEN = process.env.TELEGRAM_TOKEN;
-if (!TOKEN) {
-  throw new Error("Missing TELEGRAM_TOKEN environment variable");
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
+
+if (!TOKEN || !WEBHOOK_URL) {
+  throw new Error("Missing TELEGRAM_TOKEN or WEBHOOK_URL");
 }
 
 // ===============================
-// INITIALIZE BOT (NO WEBHOOK SET HERE)
+// INIT
 // ===============================
 const bot = new TelegramBot(TOKEN);
+const app = express();
+app.use(express.json());
 
 // ===============================
-// USER BALANCES (TEMP – NOT PERSISTENT)
+// WEBHOOK
+// ===============================
+bot.setWebHook(`${WEBHOOK_URL}/webhook`);
+
+// ===============================
+// USER BALANCES (TEMP)
 // ===============================
 const users = {};
 
@@ -32,11 +42,11 @@ const defaultKeyboard = {
       ["₿ BTC Wallet", "🌐 USDT Wallet"],
       ["🟣 SOL Wallet", "🔄 Swap Crypto"],
       ["🎁 Refer and Earn", "📊 View Rates"],
-      ["ℹ️ How to Use"],
+      ["ℹ️ How to Use"]
     ],
     resize_keyboard: true,
-    persistent_keyboard: true,
-  },
+    persistent_keyboard: true
+  }
 };
 
 // ===============================
@@ -51,7 +61,7 @@ async function fetchNgnRates() {
       usdt: data.tether.ngn,
       btc: data.bitcoin.ngn,
       eth: data.ethereum.ngn,
-      sol: data.solana.ngn,
+      sol: data.solana.ngn
     };
   } catch (err) {
     console.error("CoinGecko error:", err.message);
@@ -69,14 +79,7 @@ function initUser(userId) {
       usdt: 50,
       btc: 50,
       eth: 50,
-      sol: 50,
-      waitingWithdrawal: false,
-      waitingBankDetails: false,
-      waitingBuySell: null,
-      waitingSwap: false,
-      swapType: null,
-      selectedCrypto: null,
-      bankAccount: null,
+      sol: 50
     };
   }
 }
@@ -90,7 +93,6 @@ async function handleMessage(msg) {
   const text = msg.text;
 
   initUser(userId);
-  const u = users[userId];
 
   if (text === "/start") {
     return bot.sendMessage(
@@ -102,7 +104,9 @@ async function handleMessage(msg) {
 
   if (text === "📊 View Rates") {
     const rates = await fetchNgnRates();
-    if (!rates) return bot.sendMessage(chatId, "❌ Unable to fetch rates");
+    if (!rates) {
+      return bot.sendMessage(chatId, "❌ Unable to fetch rates");
+    }
 
     return bot.sendMessage(
       chatId,
@@ -116,29 +120,33 @@ SOL: ₦${rates.sol}`
 }
 
 // ===============================
-// CALLBACK HANDLER
+// WEBHOOK ENDPOINT
 // ===============================
-async function handleCallback(query) {
-  await bot.answerCallbackQuery(query.id);
-}
-
-// ===============================
-// VERCEL HANDLER (THIS IS WHAT MATTERS)
-// ===============================
-module.exports = async (req, res) => {
+app.post("/webhook", async (req, res) => {
   try {
-    if (req.method === "POST") {
-      const body = req.body;
-
-      if (body.message) await handleMessage(body.message);
-      if (body.callback_query) await handleCallback(body.callback_query);
-
-      return res.status(200).send("OK");
+    const body = req.body;
+    if (body.message) await handleMessage(body.message);
+    if (body.callback_query) {
+      await bot.answerCallbackQuery(body.callback_query.id);
     }
-
-    return res.status(200).send("Telegram bot webhook is running ✅");
+    res.sendStatus(200);
   } catch (err) {
-    console.error("Handler error:", err);
-    return res.status(500).send("Internal Error");
+    console.error("Webhook error:", err);
+    res.sendStatus(500);
   }
-};
+});
+
+// ===============================
+// HEALTH CHECK
+// ===============================
+app.get("/", (req, res) => {
+  res.send("✅ Aerosoft Trade Bot running on Replit");
+});
+
+// ===============================
+// START SERVER
+// ===============================
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("Bot running on port", PORT);
+});
