@@ -26,10 +26,11 @@ app.use(express.json());
 bot.setWebHook(`${WEBHOOK_URL}/webhook`);
 
 // ===============================
-// USER BALANCES & SWAP STATES
+// USER BALANCES & STATES
 // ===============================
-const users = {};        // store user balances
-const swapStates = {};   // track swap sessions
+const users = {};          // store user balances
+const swapStates = {};     // track swap sessions
+const withdrawStates = {}; // track withdrawals awaiting amount input
 
 // ===============================
 // DEFAULT KEYBOARD
@@ -105,20 +106,25 @@ async function handleCallbackQuery(callbackQuery) {
   const data = callbackQuery.data;
 
   initUser(userId);
-  if (!swapStates[userId]) swapStates[userId] = { step: 1 };
-  const state = swapStates[userId];
+
+  // Reset states if needed
+  if (!swapStates[userId]) swapStates[userId] = { step: 0 };
+  if (!withdrawStates[userId]) withdrawStates[userId] = { step: 0 };
 
   // Back to main menu
   if (data === "back_to_menu") {
     delete swapStates[userId];
+    delete withdrawStates[userId];
     await bot.sendMessage(userId, "🏠 Main Menu:", defaultKeyboard);
     return bot.answerCallbackQuery(callbackQuery.id);
   }
 
-  // Swap inline: choose FROM
+  // ===========================
+  // Swap Inline
+  // ===========================
   if (data.startsWith("swap_from_")) {
-    state.from = data.replace("swap_from_", "");
-    state.step = 2;
+    swapStates[userId].from = data.replace("swap_from_", "");
+    swapStates[userId].step = 2;
 
     const toKeyboard = {
       reply_markup: {
@@ -132,11 +138,19 @@ async function handleCallbackQuery(callbackQuery) {
     return bot.sendMessage(chatId, `Select crypto to receive:`, toKeyboard);
   }
 
-  // Swap inline: choose TO
   if (data.startsWith("swap_to_")) {
-    state.to = data.replace("swap_to_", "");
-    state.step = 3;
-    return bot.sendMessage(chatId, `Enter amount of ${state.from} to swap:`);
+    swapStates[userId].to = data.replace("swap_to_", "");
+    swapStates[userId].step = 3;
+    return bot.sendMessage(chatId, `Enter amount of ${swapStates[userId].from} to swap:`);
+  }
+
+  // ===========================
+  // Withdraw Inline Buttons
+  // ===========================
+  if (data.startsWith("withdraw_")) {
+    const wallet = data.replace("withdraw_", "");
+    withdrawStates[userId] = { step: 1, wallet };
+    return bot.sendMessage(chatId, `Enter amount of ${wallet.toUpperCase()} to withdraw:`);
   }
 
   await bot.answerCallbackQuery(callbackQuery.id);
@@ -151,34 +165,67 @@ async function handleMessage(msg) {
   const text = msg.text;
 
   initUser(userId);
-  const state = swapStates[userId];
+  const swapState = swapStates[userId];
+  const withdrawState = withdrawStates[userId];
 
   // =========================
-  // IF IN SWAP FLOW: enter amount
+  // HANDLE SWAP AMOUNT
   // =========================
-  if (state && state.step === 3) {
+  if (swapState && swapState.step === 3) {
     const amount = parseFloat(text);
-    if (isNaN(amount) || amount <= 0 || amount > users[userId][state.from.toLowerCase()]) {
-      return bot.sendMessage(chatId, `❌ Invalid amount. You have ${users[userId][state.from.toLowerCase()]} ${state.from}`);
+    if (isNaN(amount) || amount <= 0 || amount > users[userId][swapState.from.toLowerCase()]) {
+      return bot.sendMessage(chatId, `❌ Invalid amount. You have ${users[userId][swapState.from.toLowerCase()]} ${swapState.from}`);
     }
 
     const rates = await fetchNgnRates();
-    const fromRate = rates[state.from.toLowerCase()];
-    const toRate = state.to === "NGN" ? 1 : rates[state.to.toLowerCase()];
-    const swappedAmount = state.to === "NGN"
+    const fromRate = rates[swapState.from.toLowerCase()];
+    const toRate = swapState.to === "NGN" ? 1 : rates[swapState.to.toLowerCase()];
+    const swappedAmount = swapState.to === "NGN"
       ? amount * fromRate
       : (amount * fromRate) / toRate;
 
-    // update balances
-    users[userId][state.from.toLowerCase()] -= amount;
-    if (state.to !== "NGN") users[userId][state.to.toLowerCase()] += swappedAmount;
+    users[userId][swapState.from.toLowerCase()] -= amount;
+    if (swapState.to !== "NGN") users[userId][swapState.to.toLowerCase()] += swappedAmount;
     else users[userId].naira += swappedAmount;
 
     delete swapStates[userId];
 
     return bot.sendMessage(
       chatId,
-      `✅ Swap complete!\nYou swapped ${amount} ${state.from} → ${swappedAmount.toFixed(6)} ${state.to}`,
+      `✅ Swap complete!\nYou swapped ${amount} ${swapState.from} → ${swappedAmount.toFixed(6)} ${swapState.to}`,
+      backToMenuKeyboard()
+    );
+  }
+
+  // =========================
+  // HANDLE WITHDRAW AMOUNT
+  // =========================
+  if (withdrawState && withdrawState.step === 1) {
+    const amount = parseFloat(text);
+    const wallet = withdrawState.wallet.toLowerCase();
+
+    if (isNaN(amount) || amount <= 0 || amount > users[userId][wallet]) {
+      return bot.sendMessage(chatId, `❌ Invalid amount. You have ${users[userId][wallet]} ${wallet.toUpperCase()}`);
+    }
+
+    // For crypto wallets, convert to NGN using live rate
+    let ngnAmount = 0;
+    if (wallet === "naira") {
+      ngnAmount = amount;
+    } else {
+      const rates = await fetchNgnRates();
+      ngnAmount = amount * rates[wallet];
+    }
+
+    users[userId][wallet] -= amount;
+
+    // Here you can integrate your real bank API
+    // For demo, we just send confirmation
+    delete withdrawStates[userId];
+
+    return bot.sendMessage(
+      chatId,
+      `✅ Withdrawal request submitted!\n${amount} ${wallet.toUpperCase()} → ₦${ngnAmount.toFixed(2)}`,
       backToMenuKeyboard()
     );
   }
@@ -190,21 +237,73 @@ async function handleMessage(msg) {
     case "/start":
       return bot.sendMessage(chatId, "👋 Welcome to Aerosoft Trade Bot! Select an option below:", defaultKeyboard);
 
+    // Wallets
     case "💰 Naira Wallet":
-      return bot.sendMessage(chatId, `💰 Your Naira balance: ₦${users[userId].naira}`, backToMenuKeyboard());
-
-    case "💵 ETH Wallet":
-      return bot.sendMessage(chatId, `💵 Your ETH balance: ${users[userId].eth} ETH`, backToMenuKeyboard());
+      return bot.sendMessage(chatId,
+        `💰 Your Naira balance: ₦${users[userId].naira}`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "💸 Withdraw to Bank", callback_data: "withdraw_naira" }],
+              [{ text: "⬅️ Back to Main Menu", callback_data: "back_to_menu" }]
+            ]
+          }
+        }
+      );
 
     case "₿ BTC Wallet":
-      return bot.sendMessage(chatId, `₿ Your BTC balance: ${users[userId].btc} BTC`, backToMenuKeyboard());
+      return bot.sendMessage(chatId,
+        `₿ Your BTC balance: ${users[userId].btc}`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "💸 Withdraw to NGN", callback_data: "withdraw_btc" }],
+              [{ text: "⬅️ Back to Main Menu", callback_data: "back_to_menu" }]
+            ]
+          }
+        }
+      );
 
-    case "🌐 USDT Wallet":
-      return bot.sendMessage(chatId, `🌐 Your USDT balance: ${users[userId].usdt} USDT`, backToMenuKeyboard());
+    case "💵 ETH Wallet":
+      return bot.sendMessage(chatId,
+        `💵 Your ETH balance: ${users[userId].eth}`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "💸 Withdraw to NGN", callback_data: "withdraw_eth" }],
+              [{ text: "⬅️ Back to Main Menu", callback_data: "back_to_menu" }]
+            ]
+          }
+        }
+      );
 
     case "🟣 SOL Wallet":
-      return bot.sendMessage(chatId, `🟣 Your SOL balance: ${users[userId].sol} SOL`, backToMenuKeyboard());
+      return bot.sendMessage(chatId,
+        `🟣 Your SOL balance: ${users[userId].sol}`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "💸 Withdraw to NGN", callback_data: "withdraw_sol" }],
+              [{ text: "⬅️ Back to Main Menu", callback_data: "back_to_menu" }]
+            ]
+          }
+        }
+      );
 
+    case "🌐 USDT Wallet":
+      return bot.sendMessage(chatId,
+        `🌐 Your USDT balance: ${users[userId].usdt}`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "💸 Withdraw to NGN", callback_data: "withdraw_usdt" }],
+              [{ text: "⬅️ Back to Main Menu", callback_data: "back_to_menu" }]
+            ]
+          }
+        }
+      );
+
+    // Swap
     case "🔄 Swap Crypto":
       swapStates[userId] = { step: 1 };
       const fromKeyboard = {
@@ -217,6 +316,7 @@ async function handleMessage(msg) {
       };
       return bot.sendMessage(chatId, "Select crypto to swap from:", fromKeyboard);
 
+    // Other
     case "🎁 Refer and Earn":
       return bot.sendMessage(chatId, `🎁 Invite your friends to earn rewards! Share this bot link: ${WEBHOOK_URL}`, backToMenuKeyboard());
 
@@ -231,7 +331,7 @@ async function handleMessage(msg) {
 
     case "ℹ️ How to Use":
       return bot.sendMessage(chatId,
-        `ℹ️ How to use Aerosoft Trade Bot:\n1️⃣ Click a wallet to check your balance\n2️⃣ Click 'View Rates' to see live NGN prices\n3️⃣ Click 'Swap Crypto' to exchange crypto with inline buttons\n4️⃣ Invite friends to earn rewards`,
+        `ℹ️ How to use Aerosoft Trade Bot:\n1️⃣ Click a wallet to check your balance\n2️⃣ Click 'View Rates' to see live NGN prices\n3️⃣ Click 'Swap Crypto' to exchange crypto with inline buttons\n4️⃣ Invite friends to earn rewards\n5️⃣ Withdraw any wallet to NGN or Bank`,
         backToMenuKeyboard()
       );
 
