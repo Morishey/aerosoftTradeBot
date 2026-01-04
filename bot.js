@@ -1,6 +1,7 @@
 // ===============================
 // IMPORTS
 // ===============================
+require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 const express = require("express");
@@ -107,11 +108,9 @@ async function handleCallbackQuery(callbackQuery) {
 
   initUser(userId);
 
-  // Reset states if needed
-  if (!swapStates[userId]) swapStates[userId] = { step: 0 };
-  if (!withdrawStates[userId]) withdrawStates[userId] = { step: 0 };
-
-  // Back to main menu
+  // ===========================
+  // Back to Main Menu
+  // ===========================
   if (data === "back_to_menu") {
     delete swapStates[userId];
     delete withdrawStates[userId];
@@ -123,9 +122,7 @@ async function handleCallbackQuery(callbackQuery) {
   // Swap Inline
   // ===========================
   if (data.startsWith("swap_from_")) {
-    swapStates[userId].from = data.replace("swap_from_", "");
-    swapStates[userId].step = 2;
-
+    swapStates[userId] = { step: 2, from: data.replace("swap_from_", "") };
     const toKeyboard = {
       reply_markup: {
         inline_keyboard: [
@@ -139,6 +136,7 @@ async function handleCallbackQuery(callbackQuery) {
   }
 
   if (data.startsWith("swap_to_")) {
+    if (!swapStates[userId]) return; // safety check
     swapStates[userId].to = data.replace("swap_to_", "");
     swapStates[userId].step = 3;
     return bot.sendMessage(chatId, `Enter amount of ${swapStates[userId].from} to swap:`);
@@ -169,7 +167,7 @@ async function handleMessage(msg) {
   const withdrawState = withdrawStates[userId];
 
   // =========================
-  // HANDLE SWAP AMOUNT
+  // Handle Swap Amount
   // =========================
   if (swapState && swapState.step === 3) {
     const amount = parseFloat(text);
@@ -180,9 +178,7 @@ async function handleMessage(msg) {
     const rates = await fetchNgnRates();
     const fromRate = rates[swapState.from.toLowerCase()];
     const toRate = swapState.to === "NGN" ? 1 : rates[swapState.to.toLowerCase()];
-    const swappedAmount = swapState.to === "NGN"
-      ? amount * fromRate
-      : (amount * fromRate) / toRate;
+    const swappedAmount = swapState.to === "NGN" ? amount * fromRate : (amount * fromRate) / toRate;
 
     users[userId][swapState.from.toLowerCase()] -= amount;
     if (swapState.to !== "NGN") users[userId][swapState.to.toLowerCase()] += swappedAmount;
@@ -198,7 +194,7 @@ async function handleMessage(msg) {
   }
 
   // =========================
-  // HANDLE WITHDRAW AMOUNT
+  // Handle Withdraw Amount
   // =========================
   if (withdrawState && withdrawState.step === 1) {
     const amount = parseFloat(text);
@@ -208,19 +204,9 @@ async function handleMessage(msg) {
       return bot.sendMessage(chatId, `❌ Invalid amount. You have ${users[userId][wallet]} ${wallet.toUpperCase()}`);
     }
 
-    // For crypto wallets, convert to NGN using live rate
-    let ngnAmount = 0;
-    if (wallet === "naira") {
-      ngnAmount = amount;
-    } else {
-      const rates = await fetchNgnRates();
-      ngnAmount = amount * rates[wallet];
-    }
+    let ngnAmount = wallet === "naira" ? amount : (await fetchNgnRates())[wallet] * amount;
 
     users[userId][wallet] -= amount;
-
-    // Here you can integrate your real bank API
-    // For demo, we just send confirmation
     delete withdrawStates[userId];
 
     return bot.sendMessage(
@@ -231,7 +217,7 @@ async function handleMessage(msg) {
   }
 
   // =========================
-  // REGULAR BUTTONS
+  // Regular Buttons
   // =========================
   switch (text) {
     case "/start":
@@ -318,7 +304,7 @@ async function handleMessage(msg) {
 
     // Other
     case "🎁 Refer and Earn":
-      return bot.sendMessage(chatId, `🎁 Invite your friends to earn rewards! Share this bot link: ${WEBHOOK_URL}`, backToMenuKeyboard());
+      return bot.sendMessage(chatId, `🎁 Invite your friends! Share this bot link: ${WEBHOOK_URL}`, backToMenuKeyboard());
 
     case "📊 View Rates":
       const rates = await fetchNgnRates();
@@ -331,7 +317,7 @@ async function handleMessage(msg) {
 
     case "ℹ️ How to Use":
       return bot.sendMessage(chatId,
-        `ℹ️ How to use Aerosoft Trade Bot:\n1️⃣ Click a wallet to check your balance\n2️⃣ Click 'View Rates' to see live NGN prices\n3️⃣ Click 'Swap Crypto' to exchange crypto with inline buttons\n4️⃣ Invite friends to earn rewards\n5️⃣ Withdraw any wallet to NGN or Bank`,
+        `ℹ️ How to use Aerosoft Trade Bot:\n1️⃣ Click a wallet to check your balance\n2️⃣ Click 'View Rates'\n3️⃣ Swap crypto\n4️⃣ Invite friends\n5️⃣ Withdraw wallets`,
         backToMenuKeyboard()
       );
 
@@ -346,10 +332,8 @@ async function handleMessage(msg) {
 app.post("/webhook", async (req, res) => {
   try {
     const body = req.body;
-
     if (body.message) await handleMessage(body.message);
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
-
     res.sendStatus(200);
   } catch (err) {
     console.error("Webhook error:", err);
@@ -360,9 +344,7 @@ app.post("/webhook", async (req, res) => {
 // ===============================
 // HEALTH CHECK
 // ===============================
-app.get("/", (req, res) => {
-  res.send("✅ Aerosoft Trade Bot running on Replit");
-});
+app.get("/", (req, res) => res.send("✅ Aerosoft Trade Bot running"));
 
 // ===============================
 // START SERVER
