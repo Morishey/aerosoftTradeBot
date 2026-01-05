@@ -861,11 +861,21 @@ app.post("/webhook", async (req, res) => {
 // ===============================
 // START SERVER
 // ===============================
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🌐 Replit URL: https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co`);
+  
+  // Replit standard domain
+  const replitDomain = process.env.REPL_SLUG && process.env.REPL_OWNER 
+    ? `${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.replit.app`
+    : null;
+
+  if (replitDomain && !process.env.WEBHOOK_URL) {
+    webhookUrl = `https://${replitDomain}/webhook`;
+  }
+
+  console.log(`🌐 Webhook URL: ${webhookUrl}`);
   
   await setupWebhook();
   console.log(`🤖 Bot initialized`);
