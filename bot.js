@@ -320,7 +320,7 @@ async function handleCallbackQuery(q) {
             [{ text: "⬅️ Back", callback_data: "back_to_referral" }]
           ]
         }
-      });
+      );
     }
 
     // BACK TO REFERRAL MENU
@@ -409,17 +409,30 @@ async function handleCallbackQuery(q) {
       );
     }
 
-    // WITHDRAW ACTIONS FOR CRYPTO
+    // CRYPTO WITHDRAWAL (BTC, ETH, SOL, USDT) - FIXED
     if (data.startsWith("withdraw_")) {
       const wallet = data.replace("withdraw_", "");
-      withdrawStates[userId] = { step: "amount", wallet };
+      
+      // Check if it's Naira (should be handled separately)
+      if (wallet === "naira") {
+        // This should never happen as naira has its own handler
+        await bot.answerCallbackQuery(q.id, { text: "❌ Invalid withdrawal type", show_alert: true });
+        return;
+      }
+      
+      // For crypto withdrawals only
+      withdrawStates[userId] = { 
+        step: "amount", 
+        wallet, 
+        type: "crypto"  // Added type to distinguish
+      };
 
       await bot.answerCallbackQuery(q.id);
       
       return bot.sendMessage(
         chatId,
         `💰 Enter amount of ${wallet.toUpperCase()} to withdraw:\n\n` +
-        `Available: ${formatNumber(user[wallet], wallet === 'naira' ? 2 : 8)}`,
+        `Available: ${formatNumber(user[wallet], wallet === 'usdt' ? 2 : 8)}`,
         {
           reply_markup: {
             inline_keyboard: [
@@ -430,7 +443,7 @@ async function handleCallbackQuery(q) {
       );
     }
 
-    // CONFIRM CRYPTO WITHDRAW
+    // CONFIRM CRYPTO WITHDRAW (for BTC, ETH, SOL, USDT)
     if (data === "confirm_withdraw") {
       const state = withdrawStates[userId];
       if (!state || state.step !== "confirm") {
@@ -450,9 +463,9 @@ async function handleCallbackQuery(q) {
         
         return bot.editMessageText(
           `✅ Withdrawal Successful!\n\n` +
-          `💰 Amount: ${formatNumber(amount, wallet === 'naira' ? 2 : 8)} ${wallet.toUpperCase()}\n` +
+          `💰 Amount: ${formatNumber(amount, wallet === 'usdt' ? 2 : 8)} ${wallet.toUpperCase()}\n` +
           `💵 Received: ₦${formatNumber(ngnAmount)}\n` +
-          `📊 New ${wallet.toUpperCase()} Balance: ${formatNumber(users[userId][wallet], wallet === 'naira' ? 2 : 8)}`,
+          `📊 New ${wallet.toUpperCase()} Balance: ${formatNumber(users[userId][wallet], wallet === 'usdt' ? 2 : 8)}`,
           { chat_id: chatId, message_id: q.message.message_id }
         );
       } else {
@@ -639,7 +652,7 @@ async function handleCallbackQuery(q) {
       );
     }
 
-    // WITHDRAW TO BANK
+    // WITHDRAW NAIRA TO BANK - CORRECTED
     if (data === "withdraw_naira") {
       if (!user.bankAccount) {
         await bot.answerCallbackQuery(q.id, { 
@@ -649,16 +662,22 @@ async function handleCallbackQuery(q) {
         return;
       }
       
-      withdrawStates[userId] = { step: "amount", wallet: "naira", type: "bank" };
+      withdrawStates[userId] = { 
+        step: "amount", 
+        wallet: "naira", 
+        type: "bank"  // This is crucial to distinguish from crypto withdrawals
+      };
       
       await bot.answerCallbackQuery(q.id);
+      
+      const bankDetails = user.bankAccount;
       return bot.sendMessage(
         chatId,
         `💰 Withdraw to Bank\n\n` +
-        `🏦 Bank: ${user.bankAccount.bank}\n` +
-        `👤 Account: ${user.bankAccount.accountName}\n\n` +
+        `🏦 Bank: ${bankDetails.bank}\n` +
+        `👤 Account: ${bankDetails.accountName} (${bankDetails.accountNumber})\n\n` +
         `Available Balance: ₦${formatNumber(user.naira)}\n\n` +
-        `Enter amount to withdraw:`,
+        `Enter amount to withdraw (₦):`,
         {
           reply_markup: {
             inline_keyboard: [
@@ -669,6 +688,7 @@ async function handleCallbackQuery(q) {
       );
     }
 
+    // CONFIRM BANK WITHDRAWAL
     if (data === "confirm_bank_withdraw") {
       const state = withdrawStates[userId];
       if (!state || state.step !== "confirm") {
@@ -724,7 +744,6 @@ async function handleCallbackQuery(q) {
     await bot.answerCallbackQuery(q.id, { text: "❌ An error occurred", show_alert: true });
   }
 }
-
 
 // ===============================
 // MESSAGE HANDLER
@@ -828,9 +847,9 @@ async function handleMessage(msg) {
     }
 
     // ===============================
-    // CRYPTO WITHDRAWAL AMOUNT INPUT
+    // CRYPTO WITHDRAWAL AMOUNT INPUT (BTC, ETH, SOL, USDT)
     // ===============================
-    if (withdrawState && withdrawState.step === "amount" && withdrawState.type !== "bank") {
+    if (withdrawState && withdrawState.step === "amount" && withdrawState.type === "crypto") {
       const { wallet } = withdrawState;
       const amount = parseFloat(text);
       
@@ -841,7 +860,7 @@ async function handleMessage(msg) {
       if (amount > user[wallet]) {
         return bot.sendMessage(
           chatId,
-          `❌ Insufficient balance!\nAvailable: ${formatNumber(user[wallet], wallet === 'naira' ? 2 : 8)} ${wallet.toUpperCase()}`
+          `❌ Insufficient balance!\nAvailable: ${formatNumber(user[wallet], wallet === 'usdt' ? 2 : 8)} ${wallet.toUpperCase()}`
         );
       }
 
@@ -852,13 +871,14 @@ async function handleMessage(msg) {
         step: "confirm",
         wallet,
         amount,
-        ngnAmount
+        ngnAmount,
+        type: "crypto"
       };
 
       return bot.sendMessage(
         chatId,
-        `⚠️ Confirm Withdrawal\n\n` +
-        `💰 Amount: ${formatNumber(amount, wallet === 'naira' ? 2 : 8)} ${wallet.toUpperCase()}\n` +
+        `⚠️ Confirm Crypto Withdrawal\n\n` +
+        `💰 Amount: ${formatNumber(amount, wallet === 'usdt' ? 2 : 8)} ${wallet.toUpperCase()}\n` +
         `💵 You'll receive: ₦${formatNumber(ngnAmount)}\n` +
         `📊 Fee: ₦0\n` +
         `📈 Total: ₦${formatNumber(ngnAmount)}`,
@@ -866,6 +886,70 @@ async function handleMessage(msg) {
           reply_markup: {
             inline_keyboard: [
               [{ text: "✅ Confirm", callback_data: "confirm_withdraw" }],
+              [{ text: "❌ Cancel", callback_data: "cancel_action" }]
+            ]
+          }
+        }
+      );
+    }
+
+    // ===============================
+    // BANK WITHDRAWAL AMOUNT INPUT (NAIRA)
+    // ===============================
+    if (withdrawState && withdrawState.step === "amount" && withdrawState.type === "bank") {
+      // Clean the input - remove ₦ and commas
+      const cleanText = text.replace(/[₦,]/g, '').trim();
+      const amount = parseFloat(cleanText);
+      
+      if (isNaN(amount) || amount <= 0) {
+        return bot.sendMessage(chatId, "❌ Please enter a valid amount (e.g., 5000 or ₦5,000)");
+      }
+      
+      if (amount > user.naira) {
+        return bot.sendMessage(
+          chatId,
+          `❌ Insufficient balance!\nAvailable: ₦${formatNumber(user.naira)}`
+        );
+      }
+      
+      // Calculate fee (1.5% with minimum of ₦50)
+      const feePercentage = 0.015; // 1.5%
+      const calculatedFee = amount * feePercentage;
+      const fee = Math.max(calculatedFee, 50); // Minimum ₦50
+      const netAmount = amount - fee;
+      
+      // Check minimum withdrawal (₦500 after fees)
+      if (netAmount < 500) {
+        return bot.sendMessage(
+          chatId,
+          `❌ Minimum withdrawal is ₦500 after fees.\n\n` +
+          `Amount: ₦${formatNumber(amount)}\n` +
+          `Fee: ₦${formatNumber(fee)}\n` +
+          `Net: ₦${formatNumber(netAmount)}\n\n` +
+          `Please enter a larger amount.`
+        );
+      }
+      
+      withdrawState.step = "confirm";
+      withdrawState.amount = amount;
+      withdrawState.fee = fee;
+      withdrawState.netAmount = netAmount;
+      
+      return bot.sendMessage(
+        chatId,
+        `⚠️ Confirm Bank Withdrawal\n\n` +
+        `🏦 Bank: ${user.bankAccount.bank}\n` +
+        `👤 Account: ${user.bankAccount.accountName} (${user.bankAccount.accountNumber})\n\n` +
+        `💰 Amount: ₦${formatNumber(amount)}\n` +
+        `💸 Fee (1.5%): ₦${formatNumber(fee)}\n` +
+        `📥 You Receive: ₦${formatNumber(netAmount)}\n\n` +
+        `📊 Current Balance: ₦${formatNumber(user.naira)}\n` +
+        `📊 New Balance: ₦${formatNumber(user.naira - amount)}\n\n` +
+        `Do you want to proceed?`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "✅ Confirm Withdrawal", callback_data: "confirm_bank_withdraw" }],
               [{ text: "❌ Cancel", callback_data: "cancel_action" }]
             ]
           }
@@ -1035,68 +1119,6 @@ async function handleMessage(msg) {
           }
         );
       }
-    }
-
-    // ===============================
-    // BANK WITHDRAWAL FLOW
-    // ===============================
-    if (withdrawState && withdrawState.step === "amount" && withdrawState.type === "bank") {
-      const amount = parseFloat(text.replace(/[₦,]/g, ''));
-      
-      if (isNaN(amount) || amount <= 0) {
-        return bot.sendMessage(chatId, "❌ Please enter a valid amount (e.g., 5000 or ₦5,000)");
-      }
-      
-      if (amount > user.naira) {
-        return bot.sendMessage(
-          chatId,
-          `❌ Insufficient balance!\nAvailable: ₦${formatNumber(user.naira)}`
-        );
-      }
-      
-      // Calculate fee (1.5% with minimum of ₦50)
-      const feePercentage = 0.015; // 1.5%
-      const calculatedFee = amount * feePercentage;
-      const fee = Math.max(calculatedFee, 50); // Minimum ₦50
-      const netAmount = amount - fee;
-      
-      // Check minimum withdrawal (₦500)
-      if (netAmount < 500) {
-        return bot.sendMessage(
-          chatId,
-          `❌ Minimum withdrawal is ₦500 after fees.\n\n` +
-          `Amount: ₦${formatNumber(amount)}\n` +
-          `Fee: ₦${formatNumber(fee)}\n` +
-          `Net: ₦${formatNumber(netAmount)}\n\n` +
-          `Please enter a larger amount.`
-        );
-      }
-      
-      withdrawState.step = "confirm";
-      withdrawState.amount = amount;
-      withdrawState.fee = fee;
-      withdrawState.netAmount = netAmount;
-      
-      return bot.sendMessage(
-        chatId,
-        `⚠️ Confirm Bank Withdrawal\n\n` +
-        `🏦 Bank: ${user.bankAccount.bank}\n` +
-        `👤 Account: ${user.bankAccount.accountName} (${user.bankAccount.accountNumber})\n\n` +
-        `💰 Amount: ₦${formatNumber(amount)}\n` +
-        `💸 Fee (1.5%): ₦${formatNumber(fee)}\n` +
-        `📥 You Receive: ₦${formatNumber(netAmount)}\n\n` +
-        `📊 Current Balance: ₦${formatNumber(user.naira)}\n` +
-        `📊 New Balance: ₦${formatNumber(user.naira - amount)}\n\n` +
-        `Do you want to proceed?`,
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: "✅ Confirm Withdrawal", callback_data: "confirm_bank_withdraw" }],
-              [{ text: "❌ Cancel", callback_data: "cancel_action" }]
-            ]
-          }
-        }
-      );
     }
 
     // ===============================
@@ -1423,6 +1445,7 @@ async function handleMessage(msg) {
         );
 
       case "⬅️ Back to Main Menu":
+        delete withdrawStates[userId];
         delete swapStates[userId];
         return bot.sendMessage(chatId, "🏠 Main Menu", defaultKeyboard);
 
@@ -1492,14 +1515,16 @@ app.listen(PORT, async () => {
   console.log(`✨ All Features: ✅`);
   console.log(`  • Crypto Wallets (BTC, ETH, SOL, USDT, NGN)`);
   console.log(`  • Bank Account Management`);
-  console.log(`  • Bank Withdrawals`);
-  console.log(`  • Crypto Swap (6 pairs)`);
-  console.log(`  • Referral System`);
+  console.log(`  • Bank Withdrawals (with 1.5% fee, min ₦50)`);
+  console.log(`  • Crypto Swap (6 pairs, 0.5% fee)`);
+  console.log(`  • Referral System (₦100 per referral)`);
   console.log(`  • Live Exchange Rates (with USD/NGN rates)`);
 });
 
 // Keep alive for Replit
 setInterval(() => {
-  axios.get(`https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co`)
-    .catch(() => console.log('🏓 Keep alive ping'));
-}, 300000);
+  if (process.env.REPL_SLUG && process.env.REPL_OWNER) {
+    axios.get(`https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co`)
+      .catch(() => console.log('🏓 Keep alive ping'));
+  }
+}, 300000); // 5 minutes
