@@ -55,9 +55,9 @@ const NIGERIAN_BANKS = [
 const defaultKeyboard = {
   reply_markup: {
     keyboard: [
-      ["💰 Naira Wallet", "💵 ETH Wallet"],
-      ["₿ BTC Wallet", "🌐 USDT Wallet"],
-      ["🟣 SOL Wallet", "🔄 Swap Crypto"],
+      ["💰 Naira Wallet", "💵 ETH Wallet"],     
+      ["₿ BTC Wallet", "🌐 USDT Wallet"],       
+      ["🟣 SOL Wallet", "🔄 Swap Crypto"],      
       ["🎁 Refer and Earn", "📊 View Rates"],
       ["🏦 Bank Account", "ℹ️ How to Use"]
     ],
@@ -687,6 +687,9 @@ async function handleCallbackQuery(q) {
 // ===============================
 // MESSAGE HANDLER
 // ===============================
+// ===============================
+// MESSAGE HANDLER
+// ===============================
 async function handleMessage(msg) {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -770,7 +773,7 @@ async function handleMessage(msg) {
       return bot.sendMessage(
         chatId,
         `🔄 Confirm Swap\n\n` +
-        `📤 Send: ${formatNumber(amount, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()}\n` +
+        `📤 Sent: ${formatNumber(amount, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()}\n` +
         `📥 Receive: ${formatNumber(swapResult.received, to === 'usdt' ? 2 : 8)} ${to.toUpperCase()}\n` +
         `💰 Fee: ${formatNumber(swapResult.fee, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()} (${swapResult.feePercent}%)\n\n` +
         `💱 Rate: 1 ${from.toUpperCase()} = ${formatNumber(swapResult.received / amount, 8)} ${to.toUpperCase()}`,
@@ -1058,7 +1061,7 @@ async function handleMessage(msg) {
     }
 
     // ===============================
-    // MAIN MENU COMMANDS
+    // MAIN MENU COMMANDS - FIXED SECTION
     // ===============================
     switch (text) {
       case "🏦 Bank Account":
@@ -1369,25 +1372,6 @@ async function handleMessage(msg) {
         return bot.sendMessage(chatId, "🏠 Main Menu", defaultKeyboard);
 
       default:
-        // Handle deposit callbacks
-        if (text.startsWith("deposit_")) {
-          const currency = text.replace("deposit_", "");
-          return bot.sendMessage(
-            chatId,
-            `📥 Deposit ${currency.toUpperCase()}\n\n` +
-            `Coming soon! This feature will be available soon.\n\n` +
-            `For now, you can use the swap feature to exchange between currencies.`,
-            {
-              reply_markup: {
-                inline_keyboard: [
-                  [{ text: "🔄 Swap Crypto", callback_data: "back_to_menu" }],
-                  [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
-                ]
-              }
-            }
-          );
-        }
-        
         return bot.sendMessage(chatId, "❌ Please use the menu buttons below", defaultKeyboard);
     }
   } catch (error) {
