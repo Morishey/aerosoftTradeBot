@@ -683,10 +683,6 @@ async function handleCallbackQuery(q) {
     await bot.answerCallbackQuery(q.id, { text: "❌ An error occurred", show_alert: true });
   }
 }
-
-// ===============================
-// MESSAGE HANDLER
-// ===============================
 // ===============================
 // MESSAGE HANDLER
 // ===============================
@@ -945,7 +941,7 @@ async function handleMessage(msg) {
             reply_markup: {
               inline_keyboard: [
                 [{ text: "❌ Cancel", callback_data: "cancel_action" }]
-                ]
+              ]
             }
           }
         );
@@ -1061,7 +1057,7 @@ async function handleMessage(msg) {
     }
 
     // ===============================
-    // MAIN MENU COMMANDS - FIXED SECTION
+    // MAIN MENU COMMANDS
     // ===============================
     switch (text) {
       case "🏦 Bank Account":
@@ -1206,7 +1202,6 @@ async function handleMessage(msg) {
           swapKeyboard
         );
 
-      // SWAP PAIRS
       case "BTC → USDT":
         return bot.sendMessage(
           chatId,
@@ -1379,7 +1374,6 @@ async function handleMessage(msg) {
     return bot.sendMessage(chatId, "❌ An error occurred. Please try again.", defaultKeyboard);
   }
 }
-
 // ===============================
 // EXPRESS SETUP
 // ===============================
