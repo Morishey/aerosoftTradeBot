@@ -136,7 +136,8 @@ async function fetchRates() {
       btc: { ngn: data.bitcoin.ngn, usd: data.bitcoin.usd },
       eth: { ngn: data.ethereum.ngn, usd: data.ethereum.usd },
       sol: { ngn: data.solana.ngn, usd: data.solana.usd },
-      usdt: { ngn: data.tether.ngn, usd: data.tether.usd }
+      usdt: { ngn: data.tether.ngn, usd: data.tether.usd },
+      usd_ngn: { buy: 1440.00, sell: 1500.00 } // Added USD/NGN rates
     };
   } catch (error) {
     console.error("Failed to fetch rates:", error.message);
@@ -144,7 +145,8 @@ async function fetchRates() {
       btc: { ngn: 50000000, usd: 35000 },
       eth: { ngn: 3000000, usd: 2000 },
       sol: { ngn: 100000, usd: 70 },
-      usdt: { ngn: 1500, usd: 1 }
+      usdt: { ngn: 1500, usd: 1 },
+      usd_ngn: { buy: 1440.00, sell: 1500.00 } // Default USD/NGN rates
     };
   }
 }
@@ -227,6 +229,45 @@ async function handleCallbackQuery(q) {
       delete bankAccountStates[userId];
       await bot.answerCallbackQuery(q.id);
       return bot.sendMessage(chatId, "🏠 Main Menu", defaultKeyboard);
+    }
+
+    // REFRESH RATES
+    if (data === "refresh_rates") {
+      await bot.answerCallbackQuery(q.id, { text: "🔄 Refreshing rates...", show_alert: false });
+      
+      try {
+        const rates = await fetchRates();
+        const rateMessage = 
+          `📊 *Live Exchange Rates*\n\n` +
+          `*🌐 USD/NGN RATES*\n` +
+          `💵 BUY: ₦${formatNumber(rates.usd_ngn.buy)} per $1\n` +
+          `💰 SELL: ₦${formatNumber(rates.usd_ngn.sell)} per $1\n\n` +
+          `*💎 CRYPTOCURRENCIES*\n` +
+          `₿ BTC: ₦${formatNumber(rates.btc.ngn)} ($${formatNumber(rates.btc.usd)})\n` +
+          `💵 ETH: ₦${formatNumber(rates.eth.ngn)} ($${formatNumber(rates.eth.usd)})\n` +
+          `🟣 SOL: ₦${formatNumber(rates.sol.ngn)} ($${formatNumber(rates.sol.usd)})\n` +
+          `🌐 USDT: ₦${formatNumber(rates.usdt.ngn)} ($${formatNumber(rates.usdt.usd)})\n\n` +
+          `📈 *Spread Information:*\n` +
+          `• USD/NGN spread: ₦${formatNumber(rates.usd_ngn.sell - rates.usd_ngn.buy)}\n` +
+          `• Crypto rates update every 5 minutes\n` +
+          `• USD/NGN rates are fixed\n\n` +
+          `_Last updated: ${new Date().toLocaleTimeString()}_`;
+        
+        return bot.editMessageText(rateMessage, {
+          chat_id: chatId,
+          message_id: q.message.message_id,
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🔄 Refresh Rates", callback_data: "refresh_rates" }],
+              [{ text: "⬅️ Back to Menu", callback_data: "back_to_menu" }]
+            ]
+          }
+        });
+      } catch (error) {
+        console.error("Error refreshing rates:", error);
+        await bot.answerCallbackQuery(q.id, { text: "❌ Failed to refresh rates", show_alert: true });
+      }
     }
 
     // SHARE REFERRAL
@@ -683,6 +724,8 @@ async function handleCallbackQuery(q) {
     await bot.answerCallbackQuery(q.id, { text: "❌ An error occurred", show_alert: true });
   }
 }
+
+
 // ===============================
 // MESSAGE HANDLER
 // ===============================
@@ -1327,15 +1370,32 @@ async function handleMessage(msg) {
         try {
           const rates = await fetchRates();
           const rateMessage = 
-            `📊 Live Exchange Rates\n\n` +
+            `📊 *Live Exchange Rates*\n\n` +
+            `*🌐 USD/NGN RATES*\n` +
+            `💵 BUY: ₦${formatNumber(rates.usd_ngn.buy)} per $1\n` +
+            `💰 SELL: ₦${formatNumber(rates.usd_ngn.sell)} per $1\n\n` +
+            `*💎 CRYPTOCURRENCIES*\n` +
             `₿ BTC: ₦${formatNumber(rates.btc.ngn)} ($${formatNumber(rates.btc.usd)})\n` +
             `💵 ETH: ₦${formatNumber(rates.eth.ngn)} ($${formatNumber(rates.eth.usd)})\n` +
             `🟣 SOL: ₦${formatNumber(rates.sol.ngn)} ($${formatNumber(rates.sol.usd)})\n` +
             `🌐 USDT: ₦${formatNumber(rates.usdt.ngn)} ($${formatNumber(rates.usdt.usd)})\n\n` +
-            `_Updates every 5 minutes_`;
+            `📈 *Spread Information:*\n` +
+            `• USD/NGN spread: ₦${formatNumber(rates.usd_ngn.sell - rates.usd_ngn.buy)}\n` +
+            `• Crypto rates update every 5 minutes\n` +
+            `• USD/NGN rates are fixed\n\n` +
+            `_Last updated: ${new Date().toLocaleTimeString()}_`;
           
-          return bot.sendMessage(chatId, rateMessage, { parse_mode: 'Markdown' });
+          return bot.sendMessage(chatId, rateMessage, { 
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🔄 Refresh Rates", callback_data: "refresh_rates" }],
+                [{ text: "⬅️ Back to Menu", callback_data: "back_to_menu" }]
+              ]
+            }
+          });
         } catch (error) {
+          console.error("Error fetching rates:", error);
           return bot.sendMessage(chatId, "❌ Unable to fetch rates. Please try again.");
         }
 
@@ -1374,6 +1434,7 @@ async function handleMessage(msg) {
     return bot.sendMessage(chatId, "❌ An error occurred. Please try again.", defaultKeyboard);
   }
 }
+
 // ===============================
 // EXPRESS SETUP
 // ===============================
@@ -1434,7 +1495,7 @@ app.listen(PORT, async () => {
   console.log(`  • Bank Withdrawals`);
   console.log(`  • Crypto Swap (6 pairs)`);
   console.log(`  • Referral System`);
-  console.log(`  • Live Exchange Rates`);
+  console.log(`  • Live Exchange Rates (with USD/NGN rates)`);
 });
 
 // Keep alive for Replit
