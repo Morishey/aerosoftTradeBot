@@ -804,12 +804,714 @@ async function handleCallbackQuery(q) {
   }
 }
 
+// ===============================
+// MESSAGE HANDLER (ADDED THE MISSING FUNCTION)
+// ===============================
+async function handleMessage(msg) {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const text = msg.text?.trim();
 
-// ===============================
-// MESSAGE HANDLER (REMAINS SAME)
-// ===============================
-// ... (Keep the existing handleMessage function as is, it's already correct)
-// The handleMessage function from your original code should remain unchanged
+  if (!text) return;
+
+  try {
+    // Handle start command with referral
+    if (text.startsWith('/start')) {
+      const parts = text.split(' ');
+      const referralCode = parts[1];
+      let referredBy = null;
+      
+      if (referralCode && referralCodes[referralCode]) {
+        referredBy = referralCodes[referralCode];
+      }
+      
+      const user = initUser(userId, referredBy);
+      
+      let welcomeMsg = `👋 Welcome to Aerosoft Trade Bot!\n\n`;
+      
+      if (referredBy) {
+        welcomeMsg += `🎉 You joined using a referral link!\n`;
+        welcomeMsg += `💰 You received ₦500 bonus in your Naira wallet!\n\n`;
+        users[userId].naira += 500;
+      }
+      
+      welcomeMsg += `✨ *Complete Features:*\n`;
+      welcomeMsg += `✅ Crypto Wallets (BTC, ETH, SOL, USDT)\n`;
+      welcomeMsg += `✅ Bank Withdrawals\n`;
+      welcomeMsg += `✅ Crypto Swaps\n`;
+      welcomeMsg += `✅ Referral System\n`;
+      welcomeMsg += `✅ Live Exchange Rates\n\n`;
+      welcomeMsg += `💡 *Tip:* Add your bank account first to enable withdrawals!`;
+      
+      return bot.sendMessage(chatId, welcomeMsg, { 
+        parse_mode: 'Markdown',
+        ...defaultKeyboard 
+      });
+    }
+
+    const user = initUser(userId);
+    const withdrawState = withdrawStates[userId];
+    const swapState = swapStates[userId];
+    const bankState = bankAccountStates[userId];
+
+    // ===============================
+    // SWAP AMOUNT INPUT
+    // ===============================
+    if (swapState && swapState.step === "amount") {
+      const { swapType } = swapState;
+      const [from, to] = swapType.split("_to_");
+      const amount = parseFloat(text);
+      
+      if (isNaN(amount) || amount <= 0) {
+        return bot.sendMessage(chatId, "❌ Please enter a valid number");
+      }
+      
+      if (amount > user[from]) {
+        return bot.sendMessage(
+          chatId,
+          `❌ Insufficient balance!\nAvailable: ${formatNumber(user[from], from === 'usdt' ? 2 : 8)} ${from.toUpperCase()}`
+        );
+      }
+
+      const rates = await fetchRates();
+      const fromRate = from === 'usdt' ? 1 : rates[from].usd;
+      const toRate = to === 'usdt' ? 1 : rates[to].usd;
+      
+      const swapResult = calculateSwap(amount, fromRate, toRate);
+      
+      swapStates[userId] = {
+        step: "confirm",
+        swapType,
+        amount,
+        received: swapResult.received,
+        fee: swapResult.fee
+      };
+
+      return bot.sendMessage(
+        chatId,
+        `🔄 Confirm Swap\n\n` +
+        `📤 Sent: ${formatNumber(amount, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()}\n` +
+        `📥 Receive: ${formatNumber(swapResult.received, to === 'usdt' ? 2 : 8)} ${to.toUpperCase()}\n` +
+        `💰 Fee: ${formatNumber(swapResult.fee, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()} (${swapResult.feePercent}%)\n\n` +
+        `💱 Rate: 1 ${from.toUpperCase()} = ${formatNumber(swapResult.received / amount, 8)} ${to.toUpperCase()}`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "✅ Confirm Swap", callback_data: "confirm_swap" }],
+              [{ text: "❌ Cancel", callback_data: "cancel_action" }]
+            ]
+          }
+        }
+      );
+    }
+
+    // ===============================
+    // CRYPTO WITHDRAWAL AMOUNT INPUT
+    // ===============================
+    if (withdrawState && withdrawState.step === "amount" && withdrawState.type !== "bank") {
+      const { wallet } = withdrawState;
+      const amount = parseFloat(text);
+      
+      if (isNaN(amount) || amount <= 0) {
+        return bot.sendMessage(chatId, "❌ Please enter a valid number");
+      }
+      
+      if (amount > user[wallet]) {
+        return bot.sendMessage(
+          chatId,
+          `❌ Insufficient balance!\nAvailable: ${formatNumber(user[wallet], wallet === 'naira' ? 2 : 8)} ${wallet.toUpperCase()}`
+        );
+      }
+
+      const rates = await fetchRates();
+      const ngnAmount = amount * rates[wallet].ngn;
+
+      withdrawStates[userId] = {
+        step: "confirm",
+        wallet,
+        amount,
+        ngnAmount
+      };
+
+      return bot.sendMessage(
+        chatId,
+        `⚠️ Confirm Withdrawal\n\n` +
+        `💰 Amount: ${formatNumber(amount, wallet === 'naira' ? 2 : 8)} ${wallet.toUpperCase()}\n` +
+        `💵 You'll receive: ₦${formatNumber(ngnAmount)}\n` +
+        `📊 Fee: ₦0\n` +
+        `📈 Total: ₦${formatNumber(ngnAmount)}`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "✅ Confirm", callback_data: "confirm_withdraw" }],
+              [{ text: "❌ Cancel", callback_data: "cancel_action" }]
+            ]
+          }
+        }
+      );
+    }
+
+    // ===============================
+    // BANK ACCOUNT SETUP FLOW
+    // ===============================
+    if (bankState) {
+      if (bankState.step === "enter_account_number") {
+        const accountNumber = text.trim();
+        
+        if (!validateAccountNumber(accountNumber)) {
+          return bot.sendMessage(
+            chatId,
+            "❌ Invalid account number. Please enter a valid 10-digit account number:",
+            {
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: "❌ Cancel", callback_data: "cancel_action" }]
+                ]
+              }
+            }
+          );
+        }
+        
+        bankState.accountNumber = accountNumber;
+        bankState.step = "enter_account_name";
+        
+        return bot.sendMessage(
+          chatId,
+          `✅ Account number accepted!\n\nNow enter the account name (as it appears on your bank statement):`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "❌ Cancel", callback_data: "cancel_action" }]
+              ]
+            }
+          }
+        );
+      }
+      
+      if (bankState.step === "enter_account_name") {
+        const accountName = text.trim();
+        
+        if (!validateAccountName(accountName)) {
+          return bot.sendMessage(
+            chatId,
+            "❌ Invalid account name. Please enter your full name (at least 2 words):",
+            {
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: "❌ Cancel", callback_data: "cancel_action" }]
+                ]
+              }
+            }
+          );
+        }
+        
+        // Save bank account
+        user.bankAccount = {
+          bank: bankState.bank,
+          accountNumber: bankState.accountNumber,
+          accountName: accountName,
+          addedAt: new Date().toISOString(),
+          verified: false
+        };
+        
+        delete bankAccountStates[userId];
+        
+        return bot.sendMessage(
+          chatId,
+          `✅ Bank Account Added Successfully!\n\n` +
+          `🏦 Bank: ${user.bankAccount.bank}\n` +
+          `🔢 Account Number: ${user.bankAccount.accountNumber}\n` +
+          `👤 Account Name: ${user.bankAccount.accountName}\n\n` +
+          `💰 You can now withdraw funds to this account!`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "💰 Withdraw Now", callback_data: "withdraw_naira" }],
+                [{ text: "🏠 Main Menu", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+      }
+      
+      // Update flow
+      if (bankState.step === "enter_account_number_update") {
+        const accountNumber = text.trim();
+        
+        if (!validateAccountNumber(accountNumber)) {
+          return bot.sendMessage(
+            chatId,
+            "❌ Invalid account number. Please enter a valid 10-digit account number:",
+            {
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: "❌ Cancel", callback_data: "cancel_action" }]
+                ]
+              }
+            }
+          );
+        }
+        
+        bankState.accountNumber = accountNumber;
+        bankState.step = "enter_account_name_update";
+        
+        return bot.sendMessage(
+          chatId,
+          `✅ Account number accepted!\n\nNow enter the new account name:`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "❌ Cancel", callback_data: "cancel_action" }]
+              ]
+            }
+          }
+        );
+      }
+      
+      if (bankState.step === "enter_account_name_update") {
+        const accountName = text.trim();
+        
+        if (!validateAccountName(accountName)) {
+          return bot.sendMessage(
+            chatId,
+            "❌ Invalid account name. Please enter your full name (at least 2 words):",
+            {
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: "❌ Cancel", callback_data: "cancel_action" }]
+                ]
+              }
+            }
+          );
+        }
+        
+        // Update bank account
+        user.bankAccount = {
+          bank: bankState.bank,
+          accountNumber: bankState.accountNumber,
+          accountName: accountName,
+          addedAt: new Date().toISOString(),
+          verified: false
+        };
+        
+        delete bankAccountStates[userId];
+        
+        return bot.sendMessage(
+          chatId,
+          `✅ Bank Account Updated Successfully!\n\n` +
+          `🏦 Bank: ${user.bankAccount.bank}\n` +
+          `🔢 Account Number: ${user.bankAccount.accountNumber}\n` +
+          `👤 Account Name: ${user.bankAccount.accountName}\n\n` +
+          `Your bank details have been updated.`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "💰 Withdraw Now", callback_data: "withdraw_naira" }],
+                [{ text: "🏠 Main Menu", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+      }
+    }
+
+    // ===============================
+    // BANK WITHDRAWAL FLOW
+    // ===============================
+    if (withdrawState && withdrawState.step === "amount" && withdrawState.type === "bank") {
+      const amount = parseFloat(text.replace(/[₦,]/g, ''));
+      
+      if (isNaN(amount) || amount <= 0) {
+        return bot.sendMessage(chatId, "❌ Please enter a valid amount (e.g., 5000 or ₦5,000)");
+      }
+      
+      if (amount > user.naira) {
+        return bot.sendMessage(
+          chatId,
+          `❌ Insufficient balance!\nAvailable: ₦${formatNumber(user.naira)}`
+        );
+      }
+      
+      // Calculate fee (1.5% with minimum of ₦50)
+      const feePercentage = 0.015; // 1.5%
+      const calculatedFee = amount * feePercentage;
+      const fee = Math.max(calculatedFee, 50); // Minimum ₦50
+      const netAmount = amount - fee;
+      
+      // Check minimum withdrawal (₦500)
+      if (netAmount < 500) {
+        return bot.sendMessage(
+          chatId,
+          `❌ Minimum withdrawal is ₦500 after fees.\n\n` +
+          `Amount: ₦${formatNumber(amount)}\n` +
+          `Fee: ₦${formatNumber(fee)}\n` +
+          `Net: ₦${formatNumber(netAmount)}\n\n` +
+          `Please enter a larger amount.`
+        );
+      }
+      
+      withdrawState.step = "confirm";
+      withdrawState.amount = amount;
+      withdrawState.fee = fee;
+      withdrawState.netAmount = netAmount;
+      
+      return bot.sendMessage(
+        chatId,
+        `⚠️ Confirm Bank Withdrawal\n\n` +
+        `🏦 Bank: ${user.bankAccount.bank}\n` +
+        `👤 Account: ${user.bankAccount.accountName} (${user.bankAccount.accountNumber})\n\n` +
+        `💰 Amount: ₦${formatNumber(amount)}\n` +
+        `💸 Fee (1.5%): ₦${formatNumber(fee)}\n` +
+        `📥 You Receive: ₦${formatNumber(netAmount)}\n\n` +
+        `📊 Current Balance: ₦${formatNumber(user.naira)}\n` +
+        `📊 New Balance: ₦${formatNumber(user.naira - amount)}\n\n` +
+        `Do you want to proceed?`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "✅ Confirm Withdrawal", callback_data: "confirm_bank_withdraw" }],
+              [{ text: "❌ Cancel", callback_data: "cancel_action" }]
+            ]
+          }
+        }
+      );
+    }
+
+    // ===============================
+    // MAIN MENU COMMANDS
+    // ===============================
+    switch (text) {
+      case "🏦 Bank Account":
+        return bot.sendMessage(
+          chatId,
+          `🏦 Bank Account Management\n\n` +
+          `Manage your bank details for withdrawals.\n\n` +
+          `Status: ${user.bankAccount ? '✅ Added' : '❌ Not Added'}\n` +
+          `Withdrawals: ${user.bankAccount ? '✅ Enabled' : '❌ Add bank first'}\n\n` +
+          `Select an option:`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "➕ Add Bank Account", callback_data: "add_bank_account" }],
+                [{ text: "👁️ View Bank Details", callback_data: "view_bank_details" }],
+                [{ text: "✏️ Update Bank Account", callback_data: "update_bank_account" }],
+                [{ text: "❌ Remove Bank Account", callback_data: "remove_bank_account" }],
+                [{ text: "⬅️ Back to Main Menu", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+
+      case "💰 Naira Wallet":
+        const nairaMsg = `💰 Naira Wallet\n\n` +
+          `Balance: ₦${formatNumber(user.naira)}\n` +
+          `Bank Account: ${user.bankAccount ? '✅ Added' : '❌ Not Added'}\n\n`;
+        
+        if (user.bankAccount) {
+          return bot.sendMessage(
+            chatId,
+            nairaMsg + `What would you like to do?`,
+            {
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: "💸 Withdraw to Bank", callback_data: "withdraw_naira" }],
+                  [{ text: "🏦 Bank Details", callback_data: "view_bank_details" }],
+                  [{ text: "📥 Deposit Naira", callback_data: "deposit_naira" }],
+                  [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+                ]
+              }
+            }
+          );
+        } else {
+          return bot.sendMessage(
+            chatId,
+            nairaMsg + `To withdraw funds, you need to add a bank account first.`,
+            {
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: "➕ Add Bank Account", callback_data: "add_bank_account" }],
+                  [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+                ]
+              }
+            }
+          );
+        }
+
+      case "₿ BTC Wallet":
+        const btcRates = await fetchRates();
+        return bot.sendMessage(
+          chatId,
+          `₿ BTC Wallet\n\n` +
+          `Balance: ${formatNumber(user.btc, 8)} BTC\n` +
+          `Value: ₦${formatNumber(user.btc * btcRates.btc.ngn)}\n` +
+          `Rate: ₦${formatNumber(btcRates.btc.ngn)} per BTC`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "💸 Sell BTC to NGN", callback_data: "withdraw_btc" }],
+                [{ text: "📥 Deposit BTC", callback_data: "deposit_btc" }],
+                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+
+      case "💵 ETH Wallet":
+        const ethRates = await fetchRates();
+        return bot.sendMessage(
+          chatId,
+          `💵 ETH Wallet\n\n` +
+          `Balance: ${formatNumber(user.eth, 8)} ETH\n` +
+          `Value: ₦${formatNumber(user.eth * ethRates.eth.ngn)}\n` +
+          `Rate: ₦${formatNumber(ethRates.eth.ngn)} per ETH`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "💸 Sell ETH to NGN", callback_data: "withdraw_eth" }],
+                [{ text: "📥 Deposit ETH", callback_data: "deposit_eth" }],
+                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+
+      case "🟣 SOL Wallet":
+        const solRates = await fetchRates();
+        return bot.sendMessage(
+          chatId,
+          `🟣 SOL Wallet\n\n` +
+          `Balance: ${formatNumber(user.sol, 8)} SOL\n` +
+          `Value: ₦${formatNumber(user.sol * solRates.sol.ngn)}\n` +
+          `Rate: ₦${formatNumber(solRates.sol.ngn)} per SOL`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "💸 Sell SOL to NGN", callback_data: "withdraw_sol" }],
+                [{ text: "📥 Deposit SOL", callback_data: "deposit_sol" }],
+                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+
+      case "🌐 USDT Wallet":
+        const usdtRates = await fetchRates();
+        return bot.sendMessage(
+          chatId,
+          `🌐 USDT Wallet\n\n` +
+          `Balance: ${formatNumber(user.usdt, 2)} USDT\n` +
+          `Value: ₦${formatNumber(user.usdt * usdtRates.usdt.ngn)}\n` +
+          `Rate: ₦${formatNumber(usdtRates.usdt.ngn)} per USDT`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "💸 Sell USDT to NGN", callback_data: "withdraw_usdt" }],
+                [{ text: "📥 Deposit USDT", callback_data: "deposit_usdt" }],
+                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+
+      case "🔄 Swap Crypto":
+        return bot.sendMessage(
+          chatId,
+          `🔄 Crypto Swap\n\n` +
+          `Trade between cryptocurrencies instantly!\n` +
+          `Fee: 0.5% per transaction\n\n` +
+          `Select a swap pair:`,
+          swapKeyboard
+        );
+
+      case "BTC → USDT":
+        return bot.sendMessage(
+          chatId,
+          `🔄 BTC to USDT Swap\n\n` +
+          `Available: ${formatNumber(user.btc, 8)} BTC\n` +
+          `Rate will be calculated when you enter amount\n\n` +
+          `Enter amount of BTC to swap:`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🔄 Start Swap", callback_data: "swap_btc_to_usdt" }],
+                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+
+      case "ETH → USDT":
+        return bot.sendMessage(
+          chatId,
+          `🔄 ETH to USDT Swap\n\n` +
+          `Available: ${formatNumber(user.eth, 8)} ETH\n` +
+          `Enter amount of ETH to swap:`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🔄 Start Swap", callback_data: "swap_eth_to_usdt" }],
+                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+
+      case "SOL → USDT":
+        return bot.sendMessage(
+          chatId,
+          `🔄 SOL to USDT Swap\n\n` +
+          `Available: ${formatNumber(user.sol, 8)} SOL\n` +
+          `Enter amount of SOL to swap:`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🔄 Start Swap", callback_data: "swap_sol_to_usdt" }],
+                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+
+      case "USDT → BTC":
+        return bot.sendMessage(
+          chatId,
+          `🔄 USDT to BTC Swap\n\n` +
+          `Available: ${formatNumber(user.usdt, 2)} USDT\n` +
+          `Enter amount of USDT to swap:`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🔄 Start Swap", callback_data: "swap_usdt_to_btc" }],
+                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+
+      case "USDT → ETH":
+        return bot.sendMessage(
+          chatId,
+          `🔄 USDT to ETH Swap\n\n` +
+          `Available: ${formatNumber(user.usdt, 2)} USDT\n` +
+          `Enter amount of USDT to swap:`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🔄 Start Swap", callback_data: "swap_usdt_to_eth" }],
+                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+
+      case "USDT → SOL":
+        return bot.sendMessage(
+          chatId,
+          `🔄 USDT to SOL Swap\n\n` +
+          `Available: ${formatNumber(user.usdt, 2)} USDT\n` +
+          `Enter amount of USDT to swap:`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🔄 Start Swap", callback_data: "swap_usdt_to_sol" }],
+                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+
+      case "🎁 Refer and Earn":
+        return bot.sendMessage(
+          chatId,
+          `🎁 Refer and Earn\n\n` +
+          `💰 Your Referral Code: ${user.referralCode}\n` +
+          `👥 Total Referrals: ${user.referrals.length}\n` +
+          `🎯 Total Earnings: ₦${formatNumber(user.referralRewards)}\n\n` +
+          `✨ Referral Rewards:\n` +
+          `• You earn ₦100 per referral\n` +
+          `• Your friend gets ₦500 bonus\n` +
+          `• No limit on earnings!\n\n` +
+          `What would you like to do?`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "📤 Share Referral Link", callback_data: "share_referral" }],
+                [{ text: "👥 My Referrals", callback_data: "my_referrals" }],
+                [{ text: "💰 Claim Rewards", callback_data: "claim_rewards" }],
+                [{ text: "⬅️ Back to Main Menu", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+
+      case "📊 View Rates":
+        try {
+          const rates = await fetchRates();
+          const rateMessage = 
+            `📊 *Live Exchange Rates*\n\n` +
+            `*🌐 USD/NGN RATES*\n` +
+            `💵 BUY: ₦${formatNumber(rates.usd_ngn.buy)} per $1\n` +
+            `💰 SELL: ₦${formatNumber(rates.usd_ngn.sell)} per $1\n\n` +
+            `*💎 CRYPTOCURRENCIES*\n` +
+            `₿ BTC: ₦${formatNumber(rates.btc.ngn)} ($${formatNumber(rates.btc.usd)})\n` +
+            `💵 ETH: ₦${formatNumber(rates.eth.ngn)} ($${formatNumber(rates.eth.usd)})\n` +
+            `🟣 SOL: ₦${formatNumber(rates.sol.ngn)} ($${formatNumber(rates.sol.usd)})\n` +
+            `🌐 USDT: ₦${formatNumber(rates.usdt.ngn)} ($${formatNumber(rates.usdt.usd)})\n\n` +
+            `📈 *Spread Information:*\n` +
+            `• USD/NGN spread: ₦${formatNumber(rates.usd_ngn.sell - rates.usd_ngn.buy)}\n` +
+            `• Crypto rates update every 5 minutes\n` +
+            `• USD/NGN rates are fixed\n\n` +
+            `_Last updated: ${new Date().toLocaleTimeString()}_`;
+          
+          return bot.sendMessage(chatId, rateMessage, { 
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🔄 Refresh Rates", callback_data: "refresh_rates" }],
+                [{ text: "⬅️ Back to Menu", callback_data: "back_to_menu" }]
+              ]
+            }
+          });
+        } catch (error) {
+          console.error("Error fetching rates:", error);
+          return bot.sendMessage(chatId, "❌ Unable to fetch rates. Please try again.");
+        }
+
+      case "ℹ️ How to Use":
+        return bot.sendMessage(
+          chatId,
+          `ℹ️ How to Use This Bot\n\n` +
+          `1. *Check Balances*: Tap any wallet button\n` +
+          `2. *Withdraw*: Select "Sell to NGN" from wallet menu\n` +
+          `3. *Swap Crypto*: Use "🔄 Swap Crypto" menu\n` +
+          `4. *Refer & Earn*: Share your referral link\n` +
+          `5. *View Rates*: Get live exchange rates\n\n` +
+          `🔄 *Swap Features:*\n` +
+          `• BTC ↔ USDT\n` +
+          `• ETH ↔ USDT\n` +
+          `• SOL ↔ USDT\n` +
+          `• 0.5% transaction fee\n\n` +
+          `🎁 *Referral Program:*\n` +
+          `• Earn ₦100 per referral\n` +
+          `• Friends get ₦500 bonus\n` +
+          `• Unlimited earnings!\n\n` +
+          `📞 Support: @YourSupportChannel\n` +
+          `⚠️ Always verify rates before trading`,
+          { parse_mode: 'Markdown' }
+        );
+
+      case "⬅️ Back to Main Menu":
+        delete swapStates[userId];
+        return bot.sendMessage(chatId, "🏠 Main Menu", defaultKeyboard);
+
+      default:
+        return bot.sendMessage(chatId, "❌ Please use the menu buttons below", defaultKeyboard);
+    }
+  } catch (error) {
+    console.error("Message handling error:", error);
+    return bot.sendMessage(chatId, "❌ An error occurred. Please try again.", defaultKeyboard);
+  }
+}
 
 // ===============================
 // EXPRESS SETUP
