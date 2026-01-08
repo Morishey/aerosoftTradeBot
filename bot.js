@@ -31,11 +31,13 @@ app.use(express.json());
 
 // Replit uses a proxy, so we need to handle the webhook URL properly
 let webhookUrl;
-if (WEBHOOK_URL) {
+if (WEBHOOK_URL && WEBHOOK_URL !== "your_replit_url_here (optional)") {
   webhookUrl = `${WEBHOOK_URL}/webhook`;
+} else if (process.env.REPLIT_DEV_DOMAIN) {
+  webhookUrl = `https://${process.env.REPLIT_DEV_DOMAIN}/webhook`;
 } else {
-  // Use Replit's standard domain
-  webhookUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/webhook`;
+  // Fallback to construction logic if env var is missing
+  webhookUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.replit.app/webhook`;
 }
 
 // ===============================
