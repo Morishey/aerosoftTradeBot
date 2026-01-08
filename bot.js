@@ -29,14 +29,25 @@ const bot = new TelegramBot(TOKEN, { polling: false });
 const app = express();
 app.use(express.json());
 
+// Debug bot connection
+bot.getMe().then(me => {
+  console.log(`🤖 Bot connected: @${me.username}`);
+}).catch(err => {
+  console.error('❌ Bot connection failed:', err);
+});
+
 // Replit uses a proxy, so we need to handle the webhook URL properly
 let webhookUrl;
 if (WEBHOOK_URL) {
   webhookUrl = `${WEBHOOK_URL}/webhook`;
-} else {
-  // Use Replit's standard domain
+} else if (process.env.REPL_SLUG && process.env.REPL_OWNER) {
   webhookUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/webhook`;
+} else {
+  console.error("❌ Could not determine webhook URL");
+  process.exit(1);
 }
+
+console.log(`🌐 Webhook URL: ${webhookUrl}`);
 
 // ===============================
 // STATE STORAGE
@@ -46,7 +57,6 @@ const withdrawStates = {};
 const swapStates = {};
 const referralCodes = {};
 const bankAccountStates = {};
-const depositStates = {};
 
 // Nigerian banks (will be populated from Flutterwave)
 let NIGERIAN_BANKS = [];
@@ -87,7 +97,6 @@ class PaymentProcessor {
     };
   }
 
-  // Verify bank account
   async verifyBankAccount(accountNumber, bankCode) {
     try {
       const response = await axios.post(
@@ -113,7 +122,6 @@ class PaymentProcessor {
     }
   }
 
-  // Process bank transfer
   async processTransfer(transferData) {
     try {
       const { amount, recipient, reference } = transferData;
@@ -150,7 +158,6 @@ class PaymentProcessor {
     }
   }
 
-  // Check transfer status
   async checkTransferStatus(transferId) {
     try {
       const response = await axios.get(
@@ -164,7 +171,6 @@ class PaymentProcessor {
     }
   }
 
-  // Get bank list from Flutterwave
   async getBanks() {
     try {
       const response = await axios.get(
@@ -179,7 +185,6 @@ class PaymentProcessor {
       }));
     } catch (error) {
       console.error('Failed to fetch banks, using fallback:', error.message);
-      // Use fallback banks with codes
       return Object.entries(BANK_CODES).map(([name, code]) => ({
         name,
         code,
@@ -188,9 +193,8 @@ class PaymentProcessor {
     }
   }
 
-  // Verify webhook signature
   verifyWebhookSignature(payload, signature) {
-    if (!process.env.FLW_WEBHOOK_SECRET) return true; // Skip if no secret set
+    if (!process.env.FLW_WEBHOOK_SECRET) return true;
     
     const hash = crypto.createHmac('sha256', process.env.FLW_WEBHOOK_SECRET)
       .update(JSON.stringify(payload))
@@ -254,12 +258,11 @@ function initUser(userId, referredBy = null) {
       totalWithdrawn: 0,
       totalDeposited: 0,
       kycVerified: false,
-      dailyWithdrawalLimit: 500000, // ₦500,000 daily limit
+      dailyWithdrawalLimit: 500000,
       dailyWithdrawn: 0,
       lastWithdrawalDate: null
     };
     
-    // Add referral bonus to referrer if applicable
     if (referredBy && users[referredBy]) {
       users[referredBy].referrals.push({
         userId: userId,
@@ -269,7 +272,6 @@ function initUser(userId, referredBy = null) {
       users[referredBy].referralRewards += 100;
       users[referredBy].naira += 100;
       
-      // Add transaction record for referrer
       createTransaction(referredBy, 'referral_bonus', 100, {
         currency: 'NGN',
         referredUserId: userId,
@@ -308,7 +310,6 @@ async function fetchRates() {
     };
   } catch (error) {
     console.error("Failed to fetch rates:", error.message);
-    // Fallback rates
     return {
       btc: { ngn: 50000000, usd: 35000 },
       eth: { ngn: 3000000, usd: 2000 },
@@ -367,31 +368,15 @@ function calculateSwap(amount, fromRate, toRate) {
   };
 }
 
-// Reset daily withdrawal limits
-function resetDailyLimits() {
-  const today = new Date().toDateString();
-  
-  Object.keys(users).forEach(userId => {
-    const user = users[userId];
-    if (user.lastWithdrawalDate !== today) {
-      user.dailyWithdrawn = 0;
-      user.lastWithdrawalDate = today;
-    }
-  });
-}
-
-// Check withdrawal limits
 function checkWithdrawalLimit(userId, amount) {
   const user = users[userId];
   const today = new Date().toDateString();
   
-  // Reset if new day
   if (user.lastWithdrawalDate !== today) {
     user.dailyWithdrawn = 0;
     user.lastWithdrawalDate = today;
   }
   
-  // Check KYC for large withdrawals
   if (amount > 100000 && !user.kycVerified) {
     return {
       allowed: false,
@@ -400,7 +385,6 @@ function checkWithdrawalLimit(userId, amount) {
     };
   }
   
-  // Check daily limit
   if (user.dailyWithdrawn + amount > user.dailyWithdrawalLimit) {
     return {
       allowed: false,
@@ -412,11 +396,9 @@ function checkWithdrawalLimit(userId, amount) {
   return { allowed: true, remaining: user.dailyWithdrawalLimit - user.dailyWithdrawn };
 }
 
-// Process real withdrawal
 async function processRealWithdrawal(userId, amount, bankDetails) {
   const user = users[userId];
   
-  // Check withdrawal limits
   const limitCheck = checkWithdrawalLimit(userId, amount);
   if (!limitCheck.allowed) {
     return {
@@ -428,7 +410,6 @@ async function processRealWithdrawal(userId, amount, bankDetails) {
   
   const reference = `AERO${Date.now()}${Math.random().toString(36).substr(2, 5)}`.toUpperCase();
   
-  // Verify account first
   const verification = await paymentProcessor.verifyBankAccount(
     bankDetails.accountNumber,
     bankDetails.bankCode
@@ -441,7 +422,6 @@ async function processRealWithdrawal(userId, amount, bankDetails) {
     };
   }
   
-  // Check if account name matches (case insensitive)
   const providedName = bankDetails.accountName.toLowerCase().replace(/\s+/g, ' ');
   const verifiedName = verification.accountName.toLowerCase().replace(/\s+/g, ' ');
   
@@ -452,7 +432,6 @@ async function processRealWithdrawal(userId, amount, bankDetails) {
     };
   }
   
-  // Create withdrawal transaction
   const transaction = createTransaction(userId, 'withdrawal', amount, {
     currency: 'NGN',
     bank: bankDetails.bankName,
@@ -465,7 +444,6 @@ async function processRealWithdrawal(userId, amount, bankDetails) {
     amount: amount
   });
   
-  // Process actual transfer
   const transferResult = await paymentProcessor.processTransfer({
     amount: amount,
     recipient: {
@@ -485,13 +463,11 @@ async function processRealWithdrawal(userId, amount, bankDetails) {
     };
   }
   
-  // Update user balance and limits
   user.naira -= amount;
   user.totalWithdrawn += amount;
   user.dailyWithdrawn += amount;
   user.lastWithdrawalDate = new Date().toDateString();
   
-  // Update transaction
   transaction.status = 'processing';
   transaction.transferId = transferResult.transferId;
   transaction.providerReference = transferResult.reference;
@@ -511,11 +487,32 @@ async function processRealWithdrawal(userId, amount, bankDetails) {
 // ===============================
 async function setupWebhook() {
   try {
+    console.log('🔄 Setting up webhook...');
+    
+    // First delete any existing webhook
+    try {
+      await bot.deleteWebHook();
+      console.log('🗑️ Existing webhook deleted');
+    } catch (error) {
+      console.log('ℹ️ No existing webhook to delete');
+    }
+    
+    // Set new webhook
     await bot.setWebHook(webhookUrl);
     console.log(`✅ Webhook set to: ${webhookUrl}`);
+    
+    // Verify webhook
+    const info = await bot.getWebHookInfo();
+    console.log('📊 Webhook info:', {
+      url: info.url,
+      pendingUpdates: info.pending_update_count,
+      lastError: info.last_error_message
+    });
+    
     return true;
   } catch (error) {
     console.error("❌ Failed to set webhook:", error.message);
+    console.error("❌ Error details:", error);
     return false;
   }
 }
@@ -528,7 +525,12 @@ async function handleCallbackQuery(q) {
   const chatId = q.message.chat.id;
   const data = q.data;
 
+  console.log(`🔘 Callback query from ${userId}: ${data}`);
+
   try {
+    // Answer callback query immediately
+    await bot.answerCallbackQuery(q.id);
+
     const user = initUser(userId);
 
     // BACK TO MENU
@@ -536,33 +538,30 @@ async function handleCallbackQuery(q) {
       delete withdrawStates[userId];
       delete swapStates[userId];
       delete bankAccountStates[userId];
-      delete depositStates[userId];
-      await bot.answerCallbackQuery(q.id);
       return bot.sendMessage(chatId, "🏠 Main Menu", defaultKeyboard);
     }
 
     // REFRESH RATES
     if (data === "refresh_rates") {
-      await bot.answerCallbackQuery(q.id, { text: "🔄 Refreshing rates...", show_alert: false });
+      const rates = await fetchRates();
+      const rateMessage = 
+        `📊 *Live Exchange Rates*\n\n` +
+        `*🌐 USD/NGN RATES*\n` +
+        `💵 BUY: ₦${formatNumber(rates.usd_ngn.buy)} per $1\n` +
+        `💰 SELL: ₦${formatNumber(rates.usd_ngn.sell)} per $1\n\n` +
+        `*💎 CRYPTOCURRENCIES*\n` +
+        `₿ BTC: ₦${formatNumber(rates.btc.ngn)} ($${formatNumber(rates.btc.usd)})\n` +
+        `💵 ETH: ₦${formatNumber(rates.eth.ngn)} ($${formatNumber(rates.eth.usd)})\n` +
+        `🟣 SOL: ₦${formatNumber(rates.sol.ngn)} ($${formatNumber(rates.sol.usd)})\n` +
+        `🌐 USDT: ₦${formatNumber(rates.usdt.ngn)} ($${formatNumber(rates.usdt.usd)})\n\n` +
+        `📈 *Spread Information:*\n` +
+        `• USD/NGN spread: ₦${formatNumber(rates.usd_ngn.sell - rates.usd_ngn.buy)}\n` +
+        `• Crypto rates update every 5 minutes\n` +
+        `• USD/NGN rates are fixed\n\n` +
+        `_Last updated: ${new Date().toLocaleTimeString()}_`;
+      
       try {
-        const rates = await fetchRates();
-        const rateMessage = 
-          `📊 *Live Exchange Rates*\n\n` +
-          `*🌐 USD/NGN RATES*\n` +
-          `💵 BUY: ₦${formatNumber(rates.usd_ngn.buy)} per $1\n` +
-          `💰 SELL: ₦${formatNumber(rates.usd_ngn.sell)} per $1\n\n` +
-          `*💎 CRYPTOCURRENCIES*\n` +
-          `₿ BTC: ₦${formatNumber(rates.btc.ngn)} ($${formatNumber(rates.btc.usd)})\n` +
-          `💵 ETH: ₦${formatNumber(rates.eth.ngn)} ($${formatNumber(rates.eth.usd)})\n` +
-          `🟣 SOL: ₦${formatNumber(rates.sol.ngn)} ($${formatNumber(rates.sol.usd)})\n` +
-          `🌐 USDT: ₦${formatNumber(rates.usdt.ngn)} ($${formatNumber(rates.usdt.usd)})\n\n` +
-          `📈 *Spread Information:*\n` +
-          `• USD/NGN spread: ₦${formatNumber(rates.usd_ngn.sell - rates.usd_ngn.buy)}\n` +
-          `• Crypto rates update every 5 minutes\n` +
-          `• USD/NGN rates are fixed\n\n` +
-          `_Last updated: ${new Date().toLocaleTimeString()}_`;
-        
-        return bot.editMessageText(rateMessage, {
+        await bot.editMessageText(rateMessage, {
           chat_id: chatId,
           message_id: q.message.message_id,
           parse_mode: 'Markdown',
@@ -574,8 +573,16 @@ async function handleCallbackQuery(q) {
           }
         });
       } catch (error) {
-        console.error("Error refreshing rates:", error);
-        await bot.answerCallbackQuery(q.id, { text: "❌ Failed to refresh rates", show_alert: true });
+        // If edit fails, send new message
+        await bot.sendMessage(chatId, rateMessage, {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🔄 Refresh Rates", callback_data: "refresh_rates" }],
+              [{ text: "⬅️ Back to Menu", callback_data: "back_to_menu" }]
+            ]
+          }
+        });
       }
       return;
     }
@@ -583,8 +590,6 @@ async function handleCallbackQuery(q) {
     // DEPOSIT HANDLERS
     if (data.startsWith("deposit_")) {
       const wallet = data.replace("deposit_", "");
-      await bot.answerCallbackQuery(q.id);
-      
       let depositMsg = `📥 Deposit ${wallet.toUpperCase()}\n\n`;
       let address = "";
       
@@ -650,7 +655,6 @@ async function handleCallbackQuery(q) {
     if (data === "share_referral") {
       const botUsername = (await bot.getMe()).username;
       const referralLink = `https://t.me/${botUsername}?start=${user.referralCode}`;
-      await bot.answerCallbackQuery(q.id);
       
       return bot.sendMessage(
         chatId,
@@ -672,8 +676,6 @@ async function handleCallbackQuery(q) {
 
     // MY REFERRALS
     if (data === "my_referrals") {
-      await bot.answerCallbackQuery(q.id);
-      
       let referralsText = "👥 My Referrals\n\n";
       
       if (user.referrals.length === 0) {
@@ -702,7 +704,6 @@ async function handleCallbackQuery(q) {
 
     // BACK TO REFERRAL MENU
     if (data === "back_to_referral") {
-      await bot.answerCallbackQuery(q.id);
       return bot.sendMessage(
         chatId,
         `🎁 Refer and Earn\n\n` +
@@ -729,7 +730,10 @@ async function handleCallbackQuery(q) {
 
     // CLAIM REWARDS
     if (data === "claim_rewards") {
-      await bot.answerCallbackQuery(q.id, { text: "✅ All rewards are automatically added to your Naira wallet!", show_alert: true });
+      await bot.answerCallbackQuery(q.id, { 
+        text: "✅ All rewards are automatically added to your Naira wallet!", 
+        show_alert: true 
+      });
       return;
     }
 
@@ -737,8 +741,6 @@ async function handleCallbackQuery(q) {
     if (data.startsWith("swap_")) {
       const swapType = data.replace("swap_", "");
       swapStates[userId] = { step: "amount", swapType };
-      
-      await bot.answerCallbackQuery(q.id);
       
       const [from, to] = swapType.split("_to_");
       return bot.sendMessage(
@@ -767,12 +769,10 @@ async function handleCallbackQuery(q) {
       const { swapType, amount, received, fee } = state;
       const [from, to] = swapType.split("_to_");
       
-      // Execute swap
       if (users[userId][from] >= amount) {
         users[userId][from] -= amount;
         users[userId][to] += received;
         
-        // Record transaction
         createTransaction(userId, 'swap', amount, {
           currency: from.toUpperCase(),
           from: from,
@@ -787,15 +787,27 @@ async function handleCallbackQuery(q) {
         
         await bot.answerCallbackQuery(q.id, { text: "✅ Swap successful!", show_alert: true });
         
-        return bot.editMessageText(
-          `✅ Swap Completed!\n\n` +
-          `📤 Sent: ${formatNumber(amount, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()}\n` +
-          `📥 Received: ${formatNumber(received, to === 'usdt' ? 2 : 8)} ${to.toUpperCase()}\n` +
-          `💰 Fee: ${formatNumber(fee, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()} (0.5%)\n\n` +
-          `📊 New ${from.toUpperCase()} Balance: ${formatNumber(users[userId][from], from === 'usdt' ? 2 : 8)}\n` +
-          `📊 New ${to.toUpperCase()} Balance: ${formatNumber(users[userId][to], to === 'usdt' ? 2 : 8)}`,
-          { chat_id: chatId, message_id: q.message.message_id }
-        );
+        try {
+          await bot.editMessageText(
+            `✅ Swap Completed!\n\n` +
+            `📤 Sent: ${formatNumber(amount, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()}\n` +
+            `📥 Received: ${formatNumber(received, to === 'usdt' ? 2 : 8)} ${to.toUpperCase()}\n` +
+            `💰 Fee: ${formatNumber(fee, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()} (0.5%)\n\n` +
+            `📊 New ${from.toUpperCase()} Balance: ${formatNumber(users[userId][from], from === 'usdt' ? 2 : 8)}\n` +
+            `📊 New ${to.toUpperCase()} Balance: ${formatNumber(users[userId][to], to === 'usdt' ? 2 : 8)}`,
+            { chat_id: chatId, message_id: q.message.message_id }
+          );
+        } catch (error) {
+          await bot.sendMessage(
+            chatId,
+            `✅ Swap Completed!\n\n` +
+            `📤 Sent: ${formatNumber(amount, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()}\n` +
+            `📥 Received: ${formatNumber(received, to === 'usdt' ? 2 : 8)} ${to.toUpperCase()}\n` +
+            `💰 Fee: ${formatNumber(fee, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()} (0.5%)\n\n` +
+            `📊 New ${from.toUpperCase()} Balance: ${formatNumber(users[userId][from], from === 'usdt' ? 2 : 8)}\n` +
+            `📊 New ${to.toUpperCase()} Balance: ${formatNumber(users[userId][to], to === 'usdt' ? 2 : 8)}`
+          );
+        }
       } else {
         await bot.answerCallbackQuery(q.id, { text: "❌ Insufficient balance", show_alert: true });
       }
@@ -807,8 +819,6 @@ async function handleCallbackQuery(q) {
       const wallet = data.replace("withdraw_", "");
       withdrawStates[userId] = { step: "amount", wallet };
 
-      await bot.answerCallbackQuery(q.id);
-      
       return bot.sendMessage(
         chatId,
         `💰 Enter amount of ${wallet.toUpperCase()} to withdraw:\n\n` +
@@ -837,7 +847,6 @@ async function handleCallbackQuery(q) {
         users[userId][wallet] -= amount;
         users[userId].naira += ngnAmount;
         
-        // Record transaction
         createTransaction(userId, 'crypto_sale', amount, {
           currency: wallet.toUpperCase(),
           amount: amount,
@@ -849,14 +858,25 @@ async function handleCallbackQuery(q) {
         
         await bot.answerCallbackQuery(q.id, { text: "✅ Withdrawal successful!", show_alert: true });
         
-        return bot.editMessageText(
-          `✅ Crypto Sale Successful!\n\n` +
-          `💰 Amount: ${formatNumber(amount, wallet === 'naira' ? 2 : 8)} ${wallet.toUpperCase()}\n` +
-          `💵 Received: ₦${formatNumber(ngnAmount)}\n` +
-          `📊 New ${wallet.toUpperCase()} Balance: ${formatNumber(users[userId][wallet], wallet === 'naira' ? 2 : 8)}\n` +
-          `📊 New Naira Balance: ₦${formatNumber(users[userId].naira)}`,
-          { chat_id: chatId, message_id: q.message.message_id }
-        );
+        try {
+          await bot.editMessageText(
+            `✅ Crypto Sale Successful!\n\n` +
+            `💰 Amount: ${formatNumber(amount, wallet === 'naira' ? 2 : 8)} ${wallet.toUpperCase()}\n` +
+            `💵 Received: ₦${formatNumber(ngnAmount)}\n` +
+            `📊 New ${wallet.toUpperCase()} Balance: ${formatNumber(users[userId][wallet], wallet === 'naira' ? 2 : 8)}\n` +
+            `📊 New Naira Balance: ₦${formatNumber(users[userId].naira)}`,
+            { chat_id: chatId, message_id: q.message.message_id }
+          );
+        } catch (error) {
+          await bot.sendMessage(
+            chatId,
+            `✅ Crypto Sale Successful!\n\n` +
+            `💰 Amount: ${formatNumber(amount, wallet === 'naira' ? 2 : 8)} ${wallet.toUpperCase()}\n` +
+            `💵 Received: ₦${formatNumber(ngnAmount)}\n` +
+            `📊 New ${wallet.toUpperCase()} Balance: ${formatNumber(users[userId][wallet], wallet === 'naira' ? 2 : 8)}\n` +
+            `📊 New Naira Balance: ₦${formatNumber(users[userId].naira)}`
+          );
+        }
       } else {
         await bot.answerCallbackQuery(q.id, { text: "❌ Insufficient balance", show_alert: true });
       }
@@ -867,25 +887,21 @@ async function handleCallbackQuery(q) {
     if (data === "add_bank_account") {
       bankAccountStates[userId] = { step: "select_bank" };
       
-      // Fetch banks dynamically
       if (NIGERIAN_BANKS.length === 0) {
         NIGERIAN_BANKS = await paymentProcessor.getBanks();
       }
       
-      // Create bank selection keyboard (first 20 banks)
       const bankButtons = NIGERIAN_BANKS.slice(0, 20).map(bank => [{
         text: bank.name,
         callback_data: `bank_selected_${bank.code}`
       }]);
       
-      // Add "Show more" if more banks
       if (NIGERIAN_BANKS.length > 20) {
         bankButtons.push([{ text: "📄 Show More Banks", callback_data: "show_more_banks" }]);
       }
       
       bankButtons.push([{ text: "❌ Cancel", callback_data: "cancel_action" }]);
       
-      await bot.answerCallbackQuery(q.id);
       return bot.sendMessage(
         chatId,
         "🏦 Select your bank from the list below:",
@@ -906,17 +922,29 @@ async function handleCallbackQuery(q) {
       
       bankButtons.push([{ text: "⬅️ Back", callback_data: "add_bank_account" }]);
       
-      await bot.answerCallbackQuery(q.id);
-      return bot.editMessageText(
-        "🏦 Select your bank (continued):",
-        {
-          chat_id: chatId,
-          message_id: q.message.message_id,
-          reply_markup: {
-            inline_keyboard: bankButtons
+      try {
+        await bot.editMessageText(
+          "🏦 Select your bank (continued):",
+          {
+            chat_id: chatId,
+            message_id: q.message.message_id,
+            reply_markup: {
+              inline_keyboard: bankButtons
+            }
           }
-        }
-      );
+        );
+      } catch (error) {
+        await bot.sendMessage(
+          chatId,
+          "🏦 Select your bank (continued):",
+          {
+            reply_markup: {
+              inline_keyboard: bankButtons
+            }
+          }
+        );
+      }
+      return;
     }
 
     if (data.startsWith("bank_selected_")) {
@@ -934,7 +962,6 @@ async function handleCallbackQuery(q) {
         bankName: bank.name
       };
       
-      await bot.answerCallbackQuery(q.id);
       return bot.sendMessage(
         chatId,
         `🏦 Bank: ${bank.name}\n\nPlease enter your 10-digit account number:`,
@@ -949,8 +976,6 @@ async function handleCallbackQuery(q) {
     }
 
     if (data === "view_bank_details") {
-      await bot.answerCallbackQuery(q.id);
-      
       if (!user.bankAccount) {
         return bot.sendMessage(
           chatId,
@@ -1006,7 +1031,6 @@ async function handleCallbackQuery(q) {
       
       bankAccountStates[userId] = { step: "select_bank_update" };
       
-      // Create bank selection keyboard
       const bankButtons = NIGERIAN_BANKS.slice(0, 20).map(bank => [{
         text: bank.name,
         callback_data: `update_bank_selected_${bank.code}`
@@ -1018,7 +1042,6 @@ async function handleCallbackQuery(q) {
       
       bankButtons.push([{ text: "❌ Cancel", callback_data: "cancel_action" }]);
       
-      await bot.answerCallbackQuery(q.id);
       return bot.sendMessage(
         chatId,
         "✏️ Select your new bank:",
@@ -1038,17 +1061,29 @@ async function handleCallbackQuery(q) {
       
       bankButtons.push([{ text: "⬅️ Back", callback_data: "update_bank_account" }]);
       
-      await bot.answerCallbackQuery(q.id);
-      return bot.editMessageText(
-        "✏️ Select your new bank (continued):",
-        {
-          chat_id: chatId,
-          message_id: q.message.message_id,
-          reply_markup: {
-            inline_keyboard: bankButtons
+      try {
+        await bot.editMessageText(
+          "✏️ Select your new bank (continued):",
+          {
+            chat_id: chatId,
+            message_id: q.message.message_id,
+            reply_markup: {
+              inline_keyboard: bankButtons
+            }
           }
-        }
-      );
+        );
+      } catch (error) {
+        await bot.sendMessage(
+          chatId,
+          "✏️ Select your new bank (continued):",
+          {
+            reply_markup: {
+              inline_keyboard: bankButtons
+            }
+          }
+        );
+      }
+      return;
     }
 
     if (data.startsWith("update_bank_selected_")) {
@@ -1066,7 +1101,6 @@ async function handleCallbackQuery(q) {
         bankName: bank.name
       };
       
-      await bot.answerCallbackQuery(q.id);
       return bot.sendMessage(
         chatId,
         `✏️ Updating Bank Account\n\n` +
@@ -1091,7 +1125,6 @@ async function handleCallbackQuery(q) {
         return;
       }
       
-      await bot.answerCallbackQuery(q.id);
       return bot.sendMessage(
         chatId,
         `⚠️ Confirm Bank Account Removal\n\n` +
@@ -1110,7 +1143,6 @@ async function handleCallbackQuery(q) {
     }
 
     if (data === "confirm_remove_bank") {
-      const oldBank = user.bankAccount;
       user.bankAccount = null;
       
       await bot.answerCallbackQuery(q.id, { 
@@ -1118,10 +1150,15 @@ async function handleCallbackQuery(q) {
         show_alert: true 
       });
       
-      return bot.editMessageText(
-        "✅ Bank account removed successfully",
-        { chat_id: chatId, message_id: q.message.message_id }
-      );
+      try {
+        await bot.editMessageText(
+          "✅ Bank account removed successfully",
+          { chat_id: chatId, message_id: q.message.message_id }
+        );
+      } catch (error) {
+        await bot.sendMessage(chatId, "✅ Bank account removed successfully");
+      }
+      return;
     }
 
     // WITHDRAW TO BANK
@@ -1138,7 +1175,6 @@ async function handleCallbackQuery(q) {
       
       const limitCheck = checkWithdrawalLimit(userId, 0);
       
-      await bot.answerCallbackQuery(q.id);
       return bot.sendMessage(
         chatId,
         `💰 Withdraw to Bank\n\n` +
@@ -1175,7 +1211,6 @@ async function handleCallbackQuery(q) {
       const limitCheck = checkWithdrawalLimit(userId, 0);
       const maxAmount = Math.min(user.naira, limitCheck.remaining);
       
-      // Calculate fee for max amount
       const feePercentage = 0.015;
       const calculatedFee = maxAmount * feePercentage;
       const fee = Math.max(calculatedFee, 50);
@@ -1198,7 +1233,6 @@ async function handleCallbackQuery(q) {
         netAmount: netAmount
       };
       
-      await bot.answerCallbackQuery(q.id);
       return bot.sendMessage(
         chatId,
         `⚠️ Confirm Maximum Withdrawal\n\n` +
@@ -1230,13 +1264,11 @@ async function handleCallbackQuery(q) {
 
       const { amount, fee, netAmount } = state;
       
-      // Check if still sufficient balance
       if (user.naira < amount) {
         await bot.answerCallbackQuery(q.id, { text: "❌ Insufficient balance", show_alert: true });
         return;
       }
 
-      // Process REAL withdrawal
       const withdrawalResult = await processRealWithdrawal(
         userId,
         netAmount,
@@ -1260,32 +1292,61 @@ async function handleCallbackQuery(q) {
       
       await bot.answerCallbackQuery(q.id, { text: "✅ Withdrawal initiated successfully!", show_alert: true });
       
-      return bot.editMessageText(
-        `✅ Withdrawal Initiated!\n\n` +
-        `💰 Amount: ₦${formatNumber(amount)}\n` +
-        `💸 Fee: ₦${formatNumber(fee)}\n` +
-        `📥 Net Sent: ₦${formatNumber(netAmount)}\n\n` +
-        `🏦 Bank: ${user.bankAccount.bankName}\n` +
-        `👤 Account: ${user.bankAccount.accountName} (${user.bankAccount.accountNumber})\n\n` +
-        `📝 Transaction ID: ${withdrawalResult.transferId}\n` +
-        `🔢 Reference: ${withdrawalResult.reference}\n\n` +
-        `📊 New Balance: ₦${formatNumber(user.naira)}\n` +
-        `📈 Daily Withdrawn: ₦${formatNumber(user.dailyWithdrawn)} / ₦${formatNumber(user.dailyWithdrawalLimit)}\n\n` +
-        `⏳ Status: Processing\n` +
-        `⏰ Funds will arrive within 1-24 hours.\n` +
-        `📱 You'll receive a notification when completed.`,
-        { 
-          chat_id: chatId, 
-          message_id: q.message.message_id,
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: "📋 View Transaction", callback_data: `view_tx_${withdrawalResult.transactionId}` }],
-              [{ text: "📊 Check Status", callback_data: `check_status_${withdrawalResult.transferId}` }],
-              [{ text: "🏠 Main Menu", callback_data: "back_to_menu" }]
-            ]
+      try {
+        await bot.editMessageText(
+          `✅ Withdrawal Initiated!\n\n` +
+          `💰 Amount: ₦${formatNumber(amount)}\n` +
+          `💸 Fee: ₦${formatNumber(fee)}\n` +
+          `📥 Net Sent: ₦${formatNumber(netAmount)}\n\n` +
+          `🏦 Bank: ${user.bankAccount.bankName}\n` +
+          `👤 Account: ${user.bankAccount.accountName} (${user.bankAccount.accountNumber})\n\n` +
+          `📝 Transaction ID: ${withdrawalResult.transferId}\n` +
+          `🔢 Reference: ${withdrawalResult.reference}\n\n` +
+          `📊 New Balance: ₦${formatNumber(user.naira)}\n` +
+          `📈 Daily Withdrawn: ₦${formatNumber(user.dailyWithdrawn)} / ₦${formatNumber(user.dailyWithdrawalLimit)}\n\n` +
+          `⏳ Status: Processing\n` +
+          `⏰ Funds will arrive within 1-24 hours.\n` +
+          `📱 You'll receive a notification when completed.`,
+          { 
+            chat_id: chatId, 
+            message_id: q.message.message_id,
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "📋 View Transaction", callback_data: `view_tx_${withdrawalResult.transactionId}` }],
+                [{ text: "📊 Check Status", callback_data: `check_status_${withdrawalResult.transferId}` }],
+                [{ text: "🏠 Main Menu", callback_data: "back_to_menu" }]
+              ]
+            }
           }
-        }
-      );
+        );
+      } catch (error) {
+        await bot.sendMessage(
+          chatId,
+          `✅ Withdrawal Initiated!\n\n` +
+          `💰 Amount: ₦${formatNumber(amount)}\n` +
+          `💸 Fee: ₦${formatNumber(fee)}\n` +
+          `📥 Net Sent: ₦${formatNumber(netAmount)}\n\n` +
+          `🏦 Bank: ${user.bankAccount.bankName}\n` +
+          `👤 Account: ${user.bankAccount.accountName} (${user.bankAccount.accountNumber})\n\n` +
+          `📝 Transaction ID: ${withdrawalResult.transferId}\n` +
+          `🔢 Reference: ${withdrawalResult.reference}\n\n` +
+          `📊 New Balance: ₦${formatNumber(user.naira)}\n` +
+          `📈 Daily Withdrawn: ₦${formatNumber(user.dailyWithdrawn)} / ₦${formatNumber(user.dailyWithdrawalLimit)}\n\n` +
+          `⏳ Status: Processing\n` +
+          `⏰ Funds will arrive within 1-24 hours.\n` +
+          `📱 You'll receive a notification when completed.`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "📋 View Transaction", callback_data: `view_tx_${withdrawalResult.transactionId}` }],
+                [{ text: "📊 Check Status", callback_data: `check_status_${withdrawalResult.transferId}` }],
+                [{ text: "🏠 Main Menu", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
+      }
+      return;
     }
 
     // VIEW TRANSACTION
@@ -1318,7 +1379,6 @@ async function handleCallbackQuery(q) {
         txDetails += `Completed: ${new Date(transaction.completedAt).toLocaleString()}\n`;
       }
       
-      await bot.answerCallbackQuery(q.id);
       return bot.sendMessage(
         chatId,
         txDetails,
@@ -1335,7 +1395,6 @@ async function handleCallbackQuery(q) {
     // CHECK TRANSFER STATUS
     if (data.startsWith("check_status_")) {
       const transferId = data.replace("check_status_", "");
-      await bot.answerCallbackQuery(q.id, { text: "🔄 Checking status...", show_alert: false });
       
       const status = await paymentProcessor.checkTransferStatus(transferId);
       
@@ -1386,7 +1445,6 @@ async function handleCallbackQuery(q) {
       );
     }
 
-    await bot.answerCallbackQuery(q.id);
   } catch (error) {
     console.error("Callback error:", error);
     await bot.answerCallbackQuery(q.id, { text: "❌ An error occurred", show_alert: true });
@@ -1400,6 +1458,8 @@ async function handleMessage(msg) {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
   const text = msg.text?.trim();
+
+  console.log(`📱 Message from ${userId}: ${text}`);
 
   if (!text) return;
 
@@ -1600,7 +1660,6 @@ async function handleMessage(msg) {
           );
         }
         
-        // Verify account with Flutterwave
         await bot.sendMessage(chatId, "🔄 Verifying account with bank...");
         
         const verification = await paymentProcessor.verifyBankAccount(
@@ -1623,7 +1682,6 @@ async function handleMessage(msg) {
           );
         }
         
-        // Check if account name matches
         const providedName = accountName.toLowerCase().replace(/\s+/g, ' ');
         const verifiedName = verification.accountName.toLowerCase().replace(/\s+/g, ' ');
         
@@ -1644,7 +1702,6 @@ async function handleMessage(msg) {
           );
         }
         
-        // Save bank account
         user.bankAccount = {
           bankCode: bankState.bankCode,
           bankName: bankState.bankName,
@@ -1728,7 +1785,6 @@ async function handleMessage(msg) {
           );
         }
         
-        // Verify account with Flutterwave
         await bot.sendMessage(chatId, "🔄 Verifying account with bank...");
         
         const verification = await paymentProcessor.verifyBankAccount(
@@ -1751,7 +1807,6 @@ async function handleMessage(msg) {
           );
         }
         
-        // Check if account name matches
         const providedName = accountName.toLowerCase().replace(/\s+/g, ' ');
         const verifiedName = verification.accountName.toLowerCase().replace(/\s+/g, ' ');
         
@@ -1772,7 +1827,6 @@ async function handleMessage(msg) {
           );
         }
         
-        // Update bank account
         user.bankAccount = {
           bankCode: bankState.bankCode,
           bankName: bankState.bankName,
@@ -1821,13 +1875,11 @@ async function handleMessage(msg) {
         );
       }
       
-      // Calculate fee (1.5% with minimum of ₦50)
       const feePercentage = 0.015;
       const calculatedFee = amount * feePercentage;
       const fee = Math.max(calculatedFee, 50);
       const netAmount = amount - fee;
       
-      // Check minimum withdrawal (₦500)
       if (netAmount < 500) {
         return bot.sendMessage(
           chatId,
@@ -1839,7 +1891,6 @@ async function handleMessage(msg) {
         );
       }
       
-      // Check withdrawal limits
       const limitCheck = checkWithdrawalLimit(userId, amount);
       if (!limitCheck.allowed) {
         return bot.sendMessage(
@@ -2230,6 +2281,7 @@ async function handleMessage(msg) {
     }
   } catch (error) {
     console.error("Message handling error:", error);
+    console.error("Stack trace:", error.stack);
     return bot.sendMessage(chatId, "❌ An error occurred. Please try again.", defaultKeyboard);
   }
 }
@@ -2240,134 +2292,77 @@ async function handleMessage(msg) {
 
 // Health check endpoint
 app.get("/", (req, res) => {
-  resetDailyLimits(); // Reset limits on each request
-  
   res.json({
     status: "online",
     service: `${BUSINESS_NAME} Trade Bot`,
     users: Object.keys(users).length,
     bankAccounts: Object.keys(users).filter(id => users[id].bankAccount).length,
-    totalWithdrawals: Object.keys(users).reduce((sum, id) => 
-      sum + (users[id].transactions?.filter(t => t.type === 'withdrawal').length || 0), 0),
-    totalDeposits: Object.keys(users).reduce((sum, id) => 
-      sum + (users[id].transactions?.filter(t => t.type === 'deposit').length || 0), 0),
     uptime: process.uptime(),
     provider: "Flutterwave",
     withdrawalEnabled: !!FLW_SECRET_KEY
   });
 });
 
-// Webhook endpoint for Telegram
-app.post("/webhook", async (req, res) => {
+// Debug endpoint to check webhook
+app.get("/debug", async (req, res) => {
   try {
-    if (req.body.message) {
-      await handleMessage(req.body.message);
-    } else if (req.body.callback_query) {
-      await handleCallbackQuery(req.body.callback_query);
-    }
-    res.sendStatus(200);
+    const info = await bot.getWebHookInfo();
+    res.json({
+      webhook: {
+        url: info.url,
+        pending_updates: info.pending_update_count,
+        last_error: info.last_error_message,
+        last_error_date: info.last_error_date
+      },
+      bot: {
+        username: (await bot.getMe()).username,
+        id: (await bot.getMe()).id
+      },
+      environment: {
+        repl_slug: process.env.REPL_SLUG,
+        repl_owner: process.env.REPL_OWNER,
+        webhook_url: webhookUrl
+      }
+    });
   } catch (error) {
-    console.error("Webhook error:", error);
-    res.sendStatus(500);
+    res.json({ error: error.message });
   }
 });
 
-// Webhook endpoint for Flutterwave transfer updates
+// Webhook endpoint for Telegram
+app.post("/webhook", (req, res) => {
+  console.log("📥 Webhook received:", req.body);
+  
+  // Immediately respond to Telegram
+  res.sendStatus(200);
+  
+  // Process asynchronously
+  setTimeout(async () => {
+    try {
+      const update = req.body;
+      
+      if (update.message) {
+        console.log("📱 Processing message:", update.message.text);
+        await handleMessage(update.message);
+      } else if (update.callback_query) {
+        console.log("🔘 Processing callback:", update.callback_query.data);
+        await handleCallbackQuery(update.callback_query);
+      }
+    } catch (error) {
+      console.error("❌ Webhook processing error:", error);
+    }
+  }, 0);
+});
+
+// Webhook endpoint for Flutterwave
 app.post("/transfer-webhook", async (req, res) => {
   try {
-    const signature = req.headers['verif-hash'];
-    
-    // Verify webhook signature if secret is set
-    if (process.env.FLW_WEBHOOK_SECRET) {
-      const hash = crypto.createHmac('sha256', process.env.FLW_WEBHOOK_SECRET)
-        .update(JSON.stringify(req.body))
-        .digest('hex');
-      
-      if (hash !== signature) {
-        console.error('Invalid webhook signature');
-        return res.sendStatus(401);
-      }
-    }
-    
-    const event = req.body;
-    console.log('Transfer webhook received:', event.event);
-    
-    if (event.event === 'transfer.completed') {
-      const transferData = event.data;
-      const transferId = transferData.id;
-      const reference = transferData.reference;
-      
-      // Find transaction by reference
-      let foundTransaction = null;
-      let foundUser = null;
-      
-      for (const userId in users) {
-        const user = users[userId];
-        const transaction = user.transactions?.find(tx => 
-          tx.details?.reference === reference || tx.transferId === transferId
-        );
-        
-        if (transaction) {
-          foundTransaction = transaction;
-          foundUser = user;
-          break;
-        }
-      }
-      
-      if (foundTransaction && foundUser) {
-        // Update transaction status
-        foundTransaction.status = 'completed';
-        foundTransaction.completedAt = new Date().toISOString();
-        foundTransaction.details.providerStatus = transferData.status;
-        foundTransaction.details.providerMessage = transferData.complete_message;
-        
-        // Notify user
-        try {
-          await bot.sendMessage(
-            foundTransaction.userId,
-            `✅ Withdrawal Completed!\n\n` +
-            `💰 Amount: ₦${formatNumber(foundTransaction.amount)}\n` +
-            `🏦 Bank: ${foundTransaction.details.bank}\n` +
-            `👤 Account: ${foundTransaction.details.accountName}\n` +
-            `📝 Transaction ID: ${foundTransaction.transferId}\n` +
-            `🔢 Reference: ${foundTransaction.details.reference}\n\n` +
-            `💰 Your withdrawal has been successfully processed and funds should be in your account now.`,
-            {
-              reply_markup: {
-                inline_keyboard: [
-                  [{ text: "🏠 Main Menu", callback_data: "back_to_menu" }]
-                ]
-              }
-            }
-          );
-        } catch (error) {
-          console.error('Failed to notify user:', error.message);
-        }
-      }
-    }
-    
+    console.log('💰 Flutterwave webhook received:', req.body.event);
     res.sendStatus(200);
   } catch (error) {
-    console.error('Transfer webhook error:', error);
+    console.error('💰 Flutterwave webhook error:', error);
     res.sendStatus(500);
   }
-});
-
-// Transaction history endpoint (for admin)
-app.get("/transactions/:userId", (req, res) => {
-  const userId = req.params.userId;
-  
-  if (!users[userId]) {
-    return res.status(404).json({ error: "User not found" });
-  }
-  
-  res.json({
-    userId: userId,
-    totalTransactions: users[userId].transactions?.length || 0,
-    transactions: users[userId].transactions || [],
-    totalWithdrawn: users[userId].totalWithdrawn || 0,
-    totalDeposited: users[userId].totalDeposited || 0
-  });
 });
 
 // ===============================
@@ -2377,31 +2372,21 @@ const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  
-  // Get Replit domain
-  const replitDomain = process.env.REPL_SLUG && process.env.REPL_OWNER 
-    ? `${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co`
-    : null;
-
-  if (replitDomain && !WEBHOOK_URL) {
-    webhookUrl = `https://${replitDomain}/webhook`;
-    console.log(`🌐 Using Replit domain: ${webhookUrl}`);
-  }
-
   console.log(`🌐 Webhook URL: ${webhookUrl}`);
   
   // Fetch banks on startup
   try {
     NIGERIAN_BANKS = await paymentProcessor.getBanks();
-    console.log(`🏦 Loaded ${NIGERIAN_BANKS.length} banks from Flutterwave`);
+    console.log(`🏦 Loaded ${NIGERIAN_BANKS.length} banks`);
   } catch (error) {
     console.log(`⚠️ Using fallback bank list (${Object.keys(BANK_CODES).length} banks)`);
     NIGERIAN_BANKS = Object.entries(BANK_CODES).map(([name, code]) => ({ name, code }));
   }
   
+  // Setup webhook
   const webhookResult = await setupWebhook();
   if (webhookResult) {
-    console.log(`🤖 Bot initialized`);
+    console.log(`🤖 Bot initialized successfully!`);
     console.log(`✨ All Features: ✅`);
     console.log(`  • Real Bank Withdrawals (Flutterwave)`);
     console.log(`  • Bank Account Verification`);
@@ -2414,11 +2399,12 @@ app.listen(PORT, async () => {
     
     if (!FLW_SECRET_KEY) {
       console.log(`⚠️ WARNING: FLW_SECRET_KEY not set. Bank withdrawals will fail!`);
-      console.log(`💡 Add your Flutterwave secret key to environment variables`);
     }
   } else {
     console.log(`❌ Bot initialization failed`);
   }
+  
+  console.log(`🔗 Debug URL: https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/debug`);
 });
 
 // Keep alive for Replit
@@ -2431,6 +2417,3 @@ setInterval(() => {
     .then(() => console.log('🏓 Keep alive ping successful'))
     .catch(err => console.log('🏓 Keep alive ping failed:', err.message));
 }, 300000);
-
-// Reset daily limits every 24 hours
-setInterval(resetDailyLimits, 24 * 60 * 60 * 1000);
