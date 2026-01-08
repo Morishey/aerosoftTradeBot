@@ -40,19 +40,12 @@ bot.getMe().then(me => {
 let webhookUrl;
 if (WEBHOOK_URL && WEBHOOK_URL !== "your_replit_url_here (optional)") {
   webhookUrl = `${WEBHOOK_URL}/webhook`;
-<<<<<<< HEAD
-} else if (process.env.REPL_SLUG && process.env.REPL_OWNER) {
-  webhookUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/webhook`;
-} else {
-  console.error("❌ Could not determine webhook URL");
-  process.exit(1);
-=======
 } else if (process.env.REPLIT_DEV_DOMAIN) {
   webhookUrl = `https://${process.env.REPLIT_DEV_DOMAIN}/webhook`;
-} else {
-  // Fallback to construction logic if env var is missing
+} else if (process.env.REPL_SLUG && process.env.REPL_OWNER) {
   webhookUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.replit.app/webhook`;
->>>>>>> 5beb222181e42b4c3c2908baaa2ee11ded164286
+} else {
+  console.log("⚠️ Could not determine webhook URL - bot will run without webhook");
 }
 
 console.log(`🌐 Webhook URL: ${webhookUrl}`);
