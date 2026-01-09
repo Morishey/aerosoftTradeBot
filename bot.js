@@ -223,9 +223,6 @@ class BlockchainMonitor {
   }
 }
 
-// Initialize blockchain monitor
-const blockchainMonitor = new BlockchainMonitor();
-
 // ===============================
 // INIT BOT & SERVER
 // ===============================
@@ -244,23 +241,18 @@ bot.getMe().then(me => {
 let webhookUrl;
 if (WEBHOOK_URL && WEBHOOK_URL !== "your_replit_url_here (optional)") {
   webhookUrl = `${WEBHOOK_URL}/webhook`;
-<<<<<<< HEAD
-} else if (process.env.REPL_SLUG && process.env.REPL_OWNER) {
-  webhookUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/webhook`;
-} else {
-  console.error("❌ Could not determine webhook URL");
-  process.exit(1);
-=======
 } else if (process.env.REPLIT_DEV_DOMAIN) {
   webhookUrl = `https://${process.env.REPLIT_DEV_DOMAIN}/webhook`;
 } else if (process.env.REPL_SLUG && process.env.REPL_OWNER) {
   webhookUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.replit.app/webhook`;
 } else {
   console.log("⚠️ Could not determine webhook URL - bot will run without webhook");
->>>>>>> 344a52ccecb921d275f3c62fac1bc774c25beb88
 }
 
 console.log(`🌐 Webhook URL: ${webhookUrl}`);
+
+// Initialize blockchain monitor (after webhookUrl is defined)
+const blockchainMonitor = new BlockchainMonitor();
 
 // ===============================
 // STATE STORAGE (UPGRADED)

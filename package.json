@@ -10,7 +10,7 @@
     "axios": "^1.13.2",
     "bip39": "^3.1.0",
     "dotenv": "^16.6.1",
-    "ethers": "^6.16.0",
+    "ethers": "^5.8.0",
     "express": "^4.22.1",
     "node-telegram-bot-api": "^0.61.0",
     "request": "^2.88.2"
