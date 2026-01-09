@@ -8,7 +8,6 @@ const express = require("express");
 const crypto = require("crypto");
 const { ethers } = require("ethers"); // Added for HD wallets
 const bip39 = require("bip39"); // Added for mnemonic generation
-const { HDNode } = require("ethers/lib/utils"); // Added for HD wallet derivation
 
 // ===============================
 // ENV VALIDATION
@@ -39,12 +38,12 @@ class HDWalletSystem {
       this.mnemonic = WALLET_MNEMONIC;
     }
     
-    this.masterWallet = ethers.Wallet.fromMnemonic(this.mnemonic);
+    this.masterNode = ethers.utils.HDNode.fromMnemonic(this.mnemonic);
     this.userAddresses = new Map(); // userId -> {btc: addr, eth: addr, etc}
     this.addressToUser = new Map(); // address -> userId
     this.depositTrackers = new Map(); // userId -> {lastChecked: Date, transactions: []}
     
-    console.log(`💰 Master Wallet: ${this.masterWallet.address}`);
+    console.log(`💰 Master Wallet: ${this.masterNode.address}`);
   }
   
   // Generate unique deposit address for user
@@ -58,16 +57,16 @@ class HDWalletSystem {
     if (!userWallets[cryptoType]) {
       // Generate deterministic address based on userId and cryptoType
       const path = this.getDerivationPath(userId, cryptoType);
-      const derivedWallet = this.masterWallet.derivePath(path);
+      const derivedNode = this.masterNode.derivePath(path);
       
       userWallets[cryptoType] = {
-        address: derivedWallet.address,
+        address: derivedNode.address,
         path: path,
         created: new Date().toISOString()
       };
       
       // Track address -> user mapping
-      this.addressToUser.set(derivedWallet.address.toLowerCase(), {
+      this.addressToUser.set(derivedNode.address.toLowerCase(), {
         userId: userId,
         cryptoType: cryptoType
       });
@@ -2405,7 +2404,7 @@ app.get("/", (req, res) => {
     users: Object.keys(users).length,
     bankAccounts: Object.keys(users).filter(id => users[id].bankAccount).length,
     hdWallet: {
-      masterAddress: walletSystem.masterWallet.address,
+      masterAddress: walletSystem.masterNode.address,
       totalUserAddresses: walletSystem.userAddresses.size,
       system: "BIP32/HD Wallet"
     },
@@ -2431,7 +2430,7 @@ app.get("/debug", async (req, res) => {
         id: (await bot.getMe()).id
       },
       hd_wallet: {
-        master_address: walletSystem.masterWallet.address,
+        master_address: walletSystem.masterNode.address,
         total_users: walletSystem.userAddresses.size,
         addresses_generated: walletSystem.addressToUser.size
       },
@@ -2525,7 +2524,7 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌐 Webhook URL: ${webhookUrl}`);
-  console.log(`💰 Master Wallet: ${walletSystem.masterWallet.address}`);
+  console.log(`💰 Master Wallet: ${walletSystem.masterNode.address}`);
   
   // Fetch banks on startup
   try {
