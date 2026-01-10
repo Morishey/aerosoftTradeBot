@@ -6,13 +6,8 @@ const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 const express = require("express");
 const crypto = require("crypto");
-<<<<<<< HEAD
 const { ethers } = require("ethers");
 const bip39 = require("bip39");
-=======
-const { ethers } = require("ethers"); // Added for HD wallets
-const bip39 = require("bip39"); // Added for mnemonic generation
->>>>>>> 8e47b94b5f0d0764f1784cc2f659ce1bfcc46fea
 
 // ===============================
 // ENV VALIDATION
@@ -42,17 +37,11 @@ class HDWalletSystem {
       this.mnemonic = WALLET_MNEMONIC;
     }
     
-<<<<<<< HEAD
-    this.masterWallet = ethers.Wallet.fromMnemonic(this.mnemonic);
-    this.userAddresses = new Map();
-    this.addressToUser = new Map();
-=======
     this.masterNode = ethers.utils.HDNode.fromMnemonic(this.mnemonic);
     this.userAddresses = new Map(); // userId -> {btc: addr, eth: addr, etc}
     this.addressToUser = new Map(); // address -> userId
     this.depositTrackers = new Map(); // userId -> {lastChecked: Date, transactions: []}
->>>>>>> 8e47b94b5f0d0764f1784cc2f659ce1bfcc46fea
-    
+
     console.log(`💰 Master Wallet: ${this.masterNode.address}`);
   }
   
@@ -73,12 +62,8 @@ class HDWalletSystem {
         created: new Date().toISOString()
       };
       
-<<<<<<< HEAD
-      this.addressToUser.set(derivedWallet.address.toLowerCase(), {
-=======
       // Track address -> user mapping
       this.addressToUser.set(derivedNode.address.toLowerCase(), {
->>>>>>> 8e47b94b5f0d0764f1784cc2f659ce1bfcc46fea
         userId: userId,
         cryptoType: cryptoType
       });
@@ -183,12 +168,11 @@ bot.getMe().then(me => {
 // DETERMINE WEBHOOK URL (Replit Compatible)
 // ===============================
 let webhookUrl;
-<<<<<<< HEAD
 if (process.env.REPLIT_DEV_DOMAIN) {
   webhookUrl = `https://${process.env.REPLIT_DEV_DOMAIN}/webhook`;
   console.log(`🌐 Using Replit dev domain: ${webhookUrl}`);
 } else if (process.env.REPL_SLUG && process.env.REPL_OWNER) {
-  webhookUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/webhook`;
+  webhookUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.replit.app/webhook`;
   console.log(`🌐 Using Replit slug URL: ${webhookUrl}`);
 } else if (process.env.REPLIT_URL && process.env.REPLIT_URL.includes('http')) {
   webhookUrl = `${process.env.REPLIT_URL.replace(/\/$/, '')}/webhook`;
@@ -198,23 +182,11 @@ if (process.env.REPLIT_DEV_DOMAIN) {
   console.log("⚠️ Could not determine webhook URL - bot will run without webhook");
 }
 
-=======
-if (WEBHOOK_URL && WEBHOOK_URL !== "your_replit_url_here (optional)") {
-  webhookUrl = `${WEBHOOK_URL}/webhook`;
-} else if (process.env.REPLIT_DEV_DOMAIN) {
-  webhookUrl = `https://${process.env.REPLIT_DEV_DOMAIN}/webhook`;
-} else if (process.env.REPL_SLUG && process.env.REPL_OWNER) {
-  webhookUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.replit.app/webhook`;
-} else {
-  console.log("⚠️ Could not determine webhook URL - bot will run without webhook");
-}
-
 console.log(`🌐 Webhook URL: ${webhookUrl}`);
 
 // Initialize blockchain monitor (after webhookUrl is defined)
 const blockchainMonitor = new BlockchainMonitor();
 
->>>>>>> 8e47b94b5f0d0764f1784cc2f659ce1bfcc46fea
 // ===============================
 // STATE STORAGE
 // ===============================
@@ -365,7 +337,6 @@ class PaymentProcessor {
 
 // Initialize systems
 const walletSystem = new HDWalletSystem();
-const blockchainMonitor = new BlockchainMonitor();
 const paymentProcessor = new PaymentProcessor();
 
 // ===============================
@@ -2222,14 +2193,9 @@ app.get("/", (req, res) => {
     service: `${BUSINESS_NAME} Trade Bot`,
     users: Object.keys(users).length,
     hdWallet: {
-<<<<<<< HEAD
-      masterAddress: walletSystem.masterWallet.address,
-      totalUserAddresses: walletSystem.userAddresses.size
-=======
       masterAddress: walletSystem.masterNode.address,
       totalUserAddresses: walletSystem.userAddresses.size,
       system: "BIP32/HD Wallet"
->>>>>>> 8e47b94b5f0d0764f1784cc2f659ce1bfcc46fea
     },
     banks: {
       loaded: NIGERIAN_BANKS.length,
@@ -2249,14 +2215,9 @@ app.get("/debug", async (req, res) => {
         username: (await bot.getMe()).username
       },
       hd_wallet: {
-<<<<<<< HEAD
-        master_address: walletSystem.masterWallet.address,
-        total_users: walletSystem.userAddresses.size
-=======
         master_address: walletSystem.masterNode.address,
         total_users: walletSystem.userAddresses.size,
         addresses_generated: walletSystem.addressToUser.size
->>>>>>> 8e47b94b5f0d0764f1784cc2f659ce1bfcc46fea
       },
       banks: {
         loaded: NIGERIAN_BANKS.length,
@@ -2345,12 +2306,8 @@ const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
-<<<<<<< HEAD
-  console.log(`💰 Master Wallet: ${walletSystem.masterWallet.address}`);
-=======
   console.log(`🌐 Webhook URL: ${webhookUrl}`);
   console.log(`💰 Master Wallet: ${walletSystem.masterNode.address}`);
->>>>>>> 8e47b94b5f0d0764f1784cc2f659ce1bfcc46fea
   
   // Load banks on startup
   try {

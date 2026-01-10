@@ -13,6 +13,7 @@
     "ethers": "^5.8.0",
     "express": "^4.22.1",
     "node-telegram-bot-api": "^0.61.0",
-    "request": "^2.88.2"
+    "request": "^2.88.2",
+    "tough-cookie": "^4.1.3"
   }
 }
