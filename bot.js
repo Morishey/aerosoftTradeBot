@@ -5,7 +5,6 @@ require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 const express = require("express");
-const crypto = require("crypto");
 const { ethers } = require("ethers");
 const bip39 = require("bip39");
 
@@ -17,10 +16,10 @@ const FLW_SECRET_KEY = process.env.FLW_SECRET_KEY;
 const FLW_PUBLIC_KEY = process.env.FLW_PUBLIC_KEY;
 const BUSINESS_NAME = process.env.BUSINESS_NAME || "Aerosoft Trade";
 const WALLET_MNEMONIC = process.env.WALLET_MNEMONIC;
+const VERCEL_URL = process.env.VERCEL_URL;
 
 if (!TOKEN) {
   console.error("❌ Missing TELEGRAM_TOKEN in environment variables");
-  console.log("💡 Go to Secrets tab in Replit and add TELEGRAM_TOKEN");
   process.exit(1);
 }
 
@@ -38,10 +37,9 @@ class HDWalletSystem {
     }
     
     this.masterNode = ethers.utils.HDNode.fromMnemonic(this.mnemonic);
-    this.userAddresses = new Map(); // userId -> {btc: addr, eth: addr, etc}
-    this.addressToUser = new Map(); // address -> userId
-    this.depositTrackers = new Map(); // userId -> {lastChecked: Date, transactions: []}
-
+    this.userAddresses = new Map();
+    this.addressToUser = new Map();
+    
     console.log(`💰 Master Wallet: ${this.masterNode.address}`);
   }
   
@@ -62,7 +60,6 @@ class HDWalletSystem {
         created: new Date().toISOString()
       };
       
-      // Track address -> user mapping
       this.addressToUser.set(derivedNode.address.toLowerCase(), {
         userId: userId,
         cryptoType: cryptoType
@@ -99,96 +96,50 @@ class HDWalletSystem {
   getUserByAddress(address) {
     return this.addressToUser.get(address.toLowerCase());
   }
-  
-  getUserAddresses(userId) {
-    const wallets = this.userAddresses.get(userId) || {};
-    return Object.entries(wallets).map(([cryptoType, wallet]) => ({
-      crypto: cryptoType,
-      address: wallet.address,
-      created: wallet.created
-    }));
-  }
-}
-
-// ===============================
-// BLOCKCHAIN MONITORING
-// ===============================
-class BlockchainMonitor {
-  constructor() {
-    this.webhookUrl = process.env.REPLIT_URL ? 
-      `${process.env.REPLIT_URL}/crypto-webhook` : 
-      "/crypto-webhook";
-  }
-  
-  async processDeposit(userId, cryptoType, amount, txHash) {
-    console.log(`💰 Processing deposit: ${userId}, ${cryptoType}, ${amount}`);
-    
-    if (users[userId]) {
-      users[userId][cryptoType] = (users[userId][cryptoType] || 0) + parseFloat(amount);
-      
-      createTransaction(userId, 'deposit', parseFloat(amount), {
-        currency: cryptoType.toUpperCase(),
-        txHash: txHash,
-        status: 'confirmed',
-        type: 'crypto_deposit'
-      });
-      
-      try {
-        await bot.sendMessage(
-          userId,
-          `💰 Deposit Confirmed!\n\n` +
-          `Amount: ${amount} ${cryptoType.toUpperCase()}\n` +
-          `Transaction: ${txHash.slice(0, 20)}...\n` +
-          `New Balance: ${users[userId][cryptoType]} ${cryptoType.toUpperCase()}\n\n` +
-          `✅ Funds have been added to your account.`,
-          { parse_mode: 'Markdown' }
-        );
-      } catch (error) {
-        console.error("Failed to notify user:", error.message);
-      }
-    }
-  }
 }
 
 // ===============================
 // INIT BOT & SERVER
 // ===============================
-const bot = new TelegramBot(TOKEN, { polling: false });
+const bot = new TelegramBot(TOKEN, { 
+  polling: false,
+  request: {
+    timeout: 60000,
+    agentOptions: {
+      keepAlive: true,
+      keepAliveMsecs: 60000
+    }
+  }
+});
+
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Debug bot connection
-bot.getMe().then(me => {
-  console.log(`🤖 Bot connected: @${me.username}`);
-}).catch(err => {
-  console.error('❌ Bot connection failed:', err);
+// CORS for webhook endpoints
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  next();
 });
 
 // ===============================
-// DETERMINE WEBHOOK URL (Replit Compatible)
+// DETERMINE WEBHOOK URL (Vercel Compatible)
 // ===============================
 let webhookUrl;
-if (process.env.REPLIT_DEV_DOMAIN) {
-  webhookUrl = `https://${process.env.REPLIT_DEV_DOMAIN}/webhook`;
-  console.log(`🌐 Using Replit dev domain: ${webhookUrl}`);
-} else if (process.env.REPL_SLUG && process.env.REPL_OWNER) {
-  webhookUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.replit.app/webhook`;
-  console.log(`🌐 Using Replit slug URL: ${webhookUrl}`);
-} else if (process.env.REPLIT_URL && process.env.REPLIT_URL.includes('http')) {
-  webhookUrl = `${process.env.REPLIT_URL.replace(/\/$/, '')}/webhook`;
-  console.log(`🌐 Using provided REPLIT_URL: ${webhookUrl}`);
+if (VERCEL_URL) {
+  webhookUrl = `${VERCEL_URL}/api/webhook`;
+  console.log(`🌐 Using Vercel URL: ${webhookUrl}`);
 } else {
+  console.log("⚠️ VERCEL_URL not set, using default");
   webhookUrl = null;
-  console.log("⚠️ Could not determine webhook URL - bot will run without webhook");
 }
 
-console.log(`🌐 Webhook URL: ${webhookUrl}`);
-
-// Initialize blockchain monitor (after webhookUrl is defined)
-const blockchainMonitor = new BlockchainMonitor();
+// Initialize wallet system
+const walletSystem = new HDWalletSystem();
 
 // ===============================
-// STATE STORAGE
+// STATE STORAGE (In-memory - consider using Redis for production)
 // ===============================
 const users = {};
 const withdrawStates = {};
@@ -196,10 +147,9 @@ const swapStates = {};
 const referralCodes = {};
 const bankAccountStates = {};
 
-// Nigerian banks (will be populated from Flutterwave)
+// Nigerian banks
 let NIGERIAN_BANKS = [];
 
-// Bank code mapping for fallback
 const BANK_CODES = {
   "Access Bank": "044",
   "First Bank of Nigeria": "011",
@@ -271,8 +221,7 @@ class PaymentProcessor {
         narration: `Withdrawal from ${BUSINESS_NAME}`,
         currency: "NGN",
         reference: reference,
-        beneficiary_name: recipient.accountName,
-        callback_url: webhookUrl ? webhookUrl.replace('/webhook', '/transfer-webhook') : ''
+        beneficiary_name: recipient.accountName
       };
 
       const response = await axios.post(
@@ -335,8 +284,6 @@ class PaymentProcessor {
   }
 }
 
-// Initialize systems
-const walletSystem = new HDWalletSystem();
 const paymentProcessor = new PaymentProcessor();
 
 // ===============================
@@ -353,19 +300,6 @@ const defaultKeyboard = {
     ],
     resize_keyboard: true,
     persistent_keyboard: true
-  }
-};
-
-const swapKeyboard = {
-  reply_markup: {
-    keyboard: [
-      ["BTC → USDT", "ETH → USDT"],
-      ["SOL → USDT", "USDT → BTC"],
-      ["USDT → ETH", "USDT → SOL"],
-      ["⬅️ Back to Main Menu"]
-    ],
-    resize_keyboard: true,
-    one_time_keyboard: true
   }
 };
 
@@ -394,11 +328,10 @@ function initUser(userId, referredBy = null) {
       dailyWithdrawn: 0,
       lastWithdrawalDate: null,
       depositAddresses: {},
-      depositHistory: [],
       lastDepositCheck: null
     };
     
-    // Generate deposit addresses for this user
+    // Generate deposit addresses
     ['btc', 'eth', 'sol', 'usdt'].forEach(crypto => {
       users[userId].depositAddresses[crypto] = walletSystem.getUserDepositAddress(userId, crypto);
     });
@@ -412,19 +345,8 @@ function initUser(userId, referredBy = null) {
       users[referredBy].referralRewards += 100;
       users[referredBy].naira += 100;
       
-      createTransaction(referredBy, 'referral_bonus', 100, {
-        currency: 'NGN',
-        referredUserId: userId,
-        type: 'referral'
-      });
-      
       // Give bonus to new user
       users[userId].naira += 500;
-      createTransaction(userId, 'referral_bonus', 500, {
-        currency: 'NGN',
-        referrerId: referredBy,
-        type: 'welcome_bonus'
-      });
     }
   }
   return users[userId];
@@ -482,27 +404,6 @@ function validateAccountNumber(accountNumber) {
 function validateAccountName(accountName) {
   const words = accountName.trim().split(/\s+/);
   return words.length >= 2 && accountName.length >= 5;
-}
-
-function createTransaction(userId, type, amount, details) {
-  const transaction = {
-    id: Date.now() + Math.random().toString(36).substr(2, 9),
-    type: type,
-    amount: amount,
-    currency: details.currency || 'NGN',
-    status: 'pending',
-    details: details,
-    timestamp: new Date().toISOString(),
-    completedAt: null,
-    userId: userId
-  };
-  
-  if (!users[userId].transactions) {
-    users[userId].transactions = [];
-  }
-  
-  users[userId].transactions.push(transaction);
-  return transaction;
 }
 
 function calculateSwap(amount, fromRate, toRate) {
@@ -580,17 +481,10 @@ async function processRealWithdrawal(userId, amount, bankDetails) {
     };
   }
   
-  const transaction = createTransaction(userId, 'withdrawal', amount, {
-    currency: 'NGN',
-    bank: bankDetails.bankName,
-    bankCode: bankDetails.bankCode,
-    accountNumber: bankDetails.accountNumber,
-    accountName: bankDetails.accountName,
-    reference: reference,
-    status: 'processing',
-    provider: 'flutterwave',
-    amount: amount
-  });
+  user.naira -= amount;
+  user.totalWithdrawn += amount;
+  user.dailyWithdrawn += amount;
+  user.lastWithdrawalDate = new Date().toDateString();
   
   const transferResult = await paymentProcessor.processTransfer({
     amount: amount,
@@ -603,27 +497,19 @@ async function processRealWithdrawal(userId, amount, bankDetails) {
   });
   
   if (!transferResult.success) {
-    transaction.status = 'failed';
-    transaction.error = transferResult.error;
+    user.naira += amount;
+    user.totalWithdrawn -= amount;
+    user.dailyWithdrawn -= amount;
+    
     return {
       success: false,
       error: transferResult.error
     };
   }
   
-  user.naira -= amount;
-  user.totalWithdrawn += amount;
-  user.dailyWithdrawn += amount;
-  user.lastWithdrawalDate = new Date().toDateString();
-  
-  transaction.status = 'processing';
-  transaction.transferId = transferResult.transferId;
-  transaction.providerReference = transferResult.reference;
-  transaction.providerResponse = transferResult.data;
-  
   return {
     success: true,
-    transactionId: transaction.id,
+    transactionId: Date.now().toString(),
     reference: reference,
     transferId: transferResult.transferId,
     amount: amount
@@ -670,17 +556,16 @@ function getDepositInstructions(cryptoType, address) {
 // ===============================
 async function setupWebhook() {
   if (!webhookUrl) {
-    console.log("⚠️ No webhook URL available, running without webhook");
+    console.log("⚠️ No webhook URL available");
     return false;
   }
   
   try {
     console.log('🔄 Setting up webhook...');
     
-    // First delete any existing webhook
+    // Delete existing webhook first
     try {
       await bot.deleteWebHook();
-      console.log('🗑️ Existing webhook deleted');
       await new Promise(resolve => setTimeout(resolve, 1000));
     } catch (error) {
       console.log('ℹ️ No existing webhook to delete');
@@ -716,7 +601,6 @@ async function handleCallbackQuery(q) {
   console.log(`🔘 Callback query from ${userId}: ${data}`);
 
   try {
-    // Answer callback query immediately
     await bot.answerCallbackQuery(q.id);
 
     const user = initUser(userId);
@@ -748,30 +632,17 @@ async function handleCallbackQuery(q) {
         `• USD/NGN rates are fixed\n\n` +
         `_Last updated: ${new Date().toLocaleTimeString()}_`;
       
-      try {
-        await bot.editMessageText(rateMessage, {
-          chat_id: chatId,
-          message_id: q.message.message_id,
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: "🔄 Refresh Rates", callback_data: "refresh_rates" }],
-              [{ text: "⬅️ Back to Menu", callback_data: "back_to_menu" }]
-            ]
-          }
-        });
-      } catch (error) {
-        await bot.sendMessage(chatId, rateMessage, {
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: "🔄 Refresh Rates", callback_data: "refresh_rates" }],
-              [{ text: "⬅️ Back to Menu", callback_data: "back_to_menu" }]
-            ]
-          }
-        });
-      }
-      return;
+      return bot.editMessageText(rateMessage, {
+        chat_id: chatId,
+        message_id: q.message.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🔄 Refresh Rates", callback_data: "refresh_rates" }],
+            [{ text: "⬅️ Back to Menu", callback_data: "back_to_menu" }]
+          ]
+        }
+      });
     }
 
     // DEPOSIT HANDLERS
@@ -824,7 +695,6 @@ async function handleCallbackQuery(q) {
     // COPY ADDRESS
     if (data.startsWith("copy_address_")) {
       const cryptoType = data.replace("copy_address_", "");
-      const address = walletSystem.getUserDepositAddress(userId, cryptoType);
       
       await bot.answerCallbackQuery(q.id, { 
         text: `📋 ${cryptoType.toUpperCase()} address copied to clipboard!`, 
@@ -970,41 +840,27 @@ async function handleCallbackQuery(q) {
         users[userId][from] -= amount;
         users[userId][to] += received;
         
-        createTransaction(userId, 'swap', amount, {
-          currency: from.toUpperCase(),
-          from: from,
-          to: to,
-          amount: amount,
-          received: received,
-          fee: fee,
-          rate: received / amount
-        });
-        
         delete swapStates[userId];
         
         await bot.answerCallbackQuery(q.id, { text: "✅ Swap successful!", show_alert: true });
         
-        try {
-          await bot.editMessageText(
-            `✅ Swap Completed!\n\n` +
-            `📤 Sent: ${formatNumber(amount, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()}\n` +
-            `📥 Received: ${formatNumber(received, to === 'usdt' ? 2 : 8)} ${to.toUpperCase()}\n` +
-            `💰 Fee: ${formatNumber(fee, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()} (0.5%)\n\n` +
-            `📊 New ${from.toUpperCase()} Balance: ${formatNumber(users[userId][from], from === 'usdt' ? 2 : 8)}\n` +
-            `📊 New ${to.toUpperCase()} Balance: ${formatNumber(users[userId][to], to === 'usdt' ? 2 : 8)}`,
-            { chat_id: chatId, message_id: q.message.message_id }
-          );
-        } catch (error) {
-          await bot.sendMessage(
-            chatId,
-            `✅ Swap Completed!\n\n` +
-            `📤 Sent: ${formatNumber(amount, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()}\n` +
-            `📥 Received: ${formatNumber(received, to === 'usdt' ? 2 : 8)} ${to.toUpperCase()}\n` +
-            `💰 Fee: ${formatNumber(fee, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()} (0.5%)\n\n` +
-            `📊 New ${from.toUpperCase()} Balance: ${formatNumber(users[userId][from], from === 'usdt' ? 2 : 8)}\n` +
-            `📊 New ${to.toUpperCase()} Balance: ${formatNumber(users[userId][to], to === 'usdt' ? 2 : 8)}`
-          );
-        }
+        return bot.editMessageText(
+          `✅ Swap Completed!\n\n` +
+          `📤 Sent: ${formatNumber(amount, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()}\n` +
+          `📥 Received: ${formatNumber(received, to === 'usdt' ? 2 : 8)} ${to.toUpperCase()}\n` +
+          `💰 Fee: ${formatNumber(fee, from === 'usdt' ? 2 : 8)} ${from.toUpperCase()} (0.5%)\n\n` +
+          `📊 New ${from.toUpperCase()} Balance: ${formatNumber(users[userId][from], from === 'usdt' ? 2 : 8)}\n` +
+          `📊 New ${to.toUpperCase()} Balance: ${formatNumber(users[userId][to], to === 'usdt' ? 2 : 8)}`,
+          { 
+            chat_id: chatId, 
+            message_id: q.message.message_id,
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🏠 Main Menu", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
       } else {
         await bot.answerCallbackQuery(q.id, { text: "❌ Insufficient balance", show_alert: true });
       }
@@ -1044,36 +900,26 @@ async function handleCallbackQuery(q) {
         users[userId][wallet] -= amount;
         users[userId].naira += ngnAmount;
         
-        createTransaction(userId, 'crypto_sale', amount, {
-          currency: wallet.toUpperCase(),
-          amount: amount,
-          ngnValue: ngnAmount,
-          rate: ngnAmount / amount
-        });
-        
         delete withdrawStates[userId];
         
         await bot.answerCallbackQuery(q.id, { text: "✅ Sale successful!", show_alert: true });
         
-        try {
-          await bot.editMessageText(
-            `✅ Crypto Sale Successful!\n\n` +
-            `💰 Amount: ${formatNumber(amount, wallet === 'naira' ? 2 : 8)} ${wallet.toUpperCase()}\n` +
-            `💵 Received: ₦${formatNumber(ngnAmount)}\n` +
-            `📊 New ${wallet.toUpperCase()} Balance: ${formatNumber(users[userId][wallet], wallet === 'naira' ? 2 : 8)}\n` +
-            `📊 New Naira Balance: ₦${formatNumber(users[userId].naira)}`,
-            { chat_id: chatId, message_id: q.message.message_id }
-          );
-        } catch (error) {
-          await bot.sendMessage(
-            chatId,
-            `✅ Crypto Sale Successful!\n\n` +
-            `💰 Amount: ${formatNumber(amount, wallet === 'naira' ? 2 : 8)} ${wallet.toUpperCase()}\n` +
-            `💵 Received: ₦${formatNumber(ngnAmount)}\n` +
-            `📊 New ${wallet.toUpperCase()} Balance: ${formatNumber(users[userId][wallet], wallet === 'naira' ? 2 : 8)}\n` +
-            `📊 New Naira Balance: ₦${formatNumber(users[userId].naira)}`
-          );
-        }
+        return bot.editMessageText(
+          `✅ Crypto Sale Successful!\n\n` +
+          `💰 Amount: ${formatNumber(amount, wallet === 'naira' ? 2 : 8)} ${wallet.toUpperCase()}\n` +
+          `💵 Received: ₦${formatNumber(ngnAmount)}\n` +
+          `📊 New ${wallet.toUpperCase()} Balance: ${formatNumber(users[userId][wallet], wallet === 'naira' ? 2 : 8)}\n` +
+          `📊 New Naira Balance: ₦${formatNumber(users[userId].naira)}`,
+          { 
+            chat_id: chatId, 
+            message_id: q.message.message_id,
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🏠 Main Menu", callback_data: "back_to_menu" }]
+              ]
+            }
+          }
+        );
       } else {
         await bot.answerCallbackQuery(q.id, { text: "❌ Insufficient balance", show_alert: true });
       }
@@ -1082,7 +928,6 @@ async function handleCallbackQuery(q) {
 
     // BANK ACCOUNT MANAGEMENT
     if (data === "add_bank_account") {
-      // Load banks if not loaded
       if (NIGERIAN_BANKS.length === 0) {
         try {
           console.log("🏦 Loading banks for user:", userId);
@@ -1175,7 +1020,6 @@ async function handleCallbackQuery(q) {
         {
           reply_markup: {
             inline_keyboard: [
-              [{ text: "✏️ Update", callback_data: "update_bank_account" }],
               [{ text: "💰 Withdraw Now", callback_data: "withdraw_naira" }],
               [{ text: "❌ Remove", callback_data: "remove_bank_account" }],
               [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
@@ -1219,15 +1063,18 @@ async function handleCallbackQuery(q) {
         show_alert: true 
       });
       
-      try {
-        await bot.editMessageText(
-          "✅ Bank account removed successfully",
-          { chat_id: chatId, message_id: q.message.message_id }
-        );
-      } catch (error) {
-        await bot.sendMessage(chatId, "✅ Bank account removed successfully");
-      }
-      return;
+      return bot.editMessageText(
+        "✅ Bank account removed successfully",
+        { 
+          chat_id: chatId, 
+          message_id: q.message.message_id,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🏠 Main Menu", callback_data: "back_to_menu" }]
+            ]
+          }
+        }
+      );
     }
 
     // WITHDRAW TO BANK
@@ -1360,55 +1207,29 @@ async function handleCallbackQuery(q) {
       
       await bot.answerCallbackQuery(q.id, { text: "✅ Withdrawal initiated successfully!", show_alert: true });
       
-      try {
-        await bot.editMessageText(
-          `✅ Withdrawal Initiated!\n\n` +
-          `💰 Amount: ₦${formatNumber(amount)}\n` +
-          `💸 Fee: ₦${formatNumber(fee)}\n` +
-          `📥 Net Sent: ₦${formatNumber(netAmount)}\n\n` +
-          `🏦 Bank: ${user.bankAccount.bankName}\n` +
-          `👤 Account: ${user.bankAccount.accountName}\n\n` +
-          `📝 Transaction ID: ${withdrawalResult.transferId}\n` +
-          `🔢 Reference: ${withdrawalResult.reference}\n\n` +
-          `📊 New Balance: ₦${formatNumber(user.naira)}\n` +
-          `⏳ Status: Processing\n` +
-          `⏰ Funds will arrive within 1-24 hours.`,
-          { 
-            chat_id: chatId, 
-            message_id: q.message.message_id,
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: "📊 Check Status", callback_data: `check_status_${withdrawalResult.transferId}` }],
-                [{ text: "🏠 Main Menu", callback_data: "back_to_menu" }]
-              ]
-            }
+      return bot.editMessageText(
+        `✅ Withdrawal Initiated!\n\n` +
+        `💰 Amount: ₦${formatNumber(amount)}\n` +
+        `💸 Fee: ₦${formatNumber(fee)}\n` +
+        `📥 Net Sent: ₦${formatNumber(netAmount)}\n\n` +
+        `🏦 Bank: ${user.bankAccount.bankName}\n` +
+        `👤 Account: ${user.bankAccount.accountName}\n\n` +
+        `📝 Transaction ID: ${withdrawalResult.transferId}\n` +
+        `🔢 Reference: ${withdrawalResult.reference}\n\n` +
+        `📊 New Balance: ₦${formatNumber(user.naira)}\n` +
+        `⏳ Status: Processing\n` +
+        `⏰ Funds will arrive within 1-24 hours.`,
+        { 
+          chat_id: chatId, 
+          message_id: q.message.message_id,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "📊 Check Status", callback_data: `check_status_${withdrawalResult.transferId}` }],
+              [{ text: "🏠 Main Menu", callback_data: "back_to_menu" }]
+            ]
           }
-        );
-      } catch (error) {
-        await bot.sendMessage(
-          chatId,
-          `✅ Withdrawal Initiated!\n\n` +
-          `💰 Amount: ₦${formatNumber(amount)}\n` +
-          `💸 Fee: ₦${formatNumber(fee)}\n` +
-          `📥 Net Sent: ₦${formatNumber(netAmount)}\n\n` +
-          `🏦 Bank: ${user.bankAccount.bankName}\n` +
-          `👤 Account: ${user.bankAccount.accountName}\n\n` +
-          `📝 Transaction ID: ${withdrawalResult.transferId}\n` +
-          `🔢 Reference: ${withdrawalResult.reference}\n\n` +
-          `📊 New Balance: ₦${formatNumber(user.naira)}\n` +
-          `⏳ Status: Processing\n` +
-          `⏰ Funds will arrive within 1-24 hours.`,
-          {
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: "📊 Check Status", callback_data: `check_status_${withdrawalResult.transferId}` }],
-                [{ text: "🏠 Main Menu", callback_data: "back_to_menu" }]
-              ]
-            }
-          }
-        );
-      }
-      return;
+        }
+      );
     }
 
     // CHECK TRANSFER STATUS
@@ -1655,7 +1476,6 @@ async function handleMessage(msg) {
       bankState.accountName = accountName;
       bankState.step = "verify_account";
       
-      // Verify account with Flutterwave
       const verifyMsg = await bot.sendMessage(
         chatId,
         "🔍 Verifying your bank account details...",
@@ -1682,7 +1502,6 @@ async function handleMessage(msg) {
           );
         }
         
-        // Check if names match
         const providedName = bankState.accountName.toLowerCase().replace(/\s+/g, ' ');
         const verifiedName = verification.accountName.toLowerCase().replace(/\s+/g, ' ');
         
@@ -1697,7 +1516,6 @@ async function handleMessage(msg) {
           );
         }
         
-        // Save bank account
         user.bankAccount = {
           bankCode: bankState.bankCode,
           bankName: bankState.bankName,
@@ -1810,7 +1628,6 @@ async function handleMessage(msg) {
     // MAIN MENU COMMANDS
     switch (text) {
       case "🏦 Bank Account":
-        // Load banks if not loaded
         if (NIGERIAN_BANKS.length === 0) {
           try {
             console.log("🏦 Loading banks for user:", userId);
@@ -1982,10 +1799,22 @@ async function handleMessage(msg) {
           `Trade between cryptocurrencies instantly!\n` +
           `Fee: 0.5% per transaction\n\n` +
           `Select a swap pair:`,
-          swapKeyboard
+          {
+            reply_markup: {
+              keyboard: [
+                ["BTC → USDT", "ETH → USDT"],
+                ["SOL → USDT", "USDT → BTC"],
+                ["USDT → ETH", "USDT → SOL"],
+                ["⬅️ Back to Main Menu"]
+              ],
+              resize_keyboard: true,
+              one_time_keyboard: true
+            }
+          }
         );
 
       case "BTC → USDT":
+        swapStates[userId] = { step: "amount", swapType: "btc_to_usdt" };
         return bot.sendMessage(
           chatId,
           `🔄 BTC to USDT Swap\n\n` +
@@ -1994,14 +1823,14 @@ async function handleMessage(msg) {
           {
             reply_markup: {
               inline_keyboard: [
-                [{ text: "🔄 Start Swap", callback_data: "swap_btc_to_usdt" }],
-                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+                [{ text: "❌ Cancel", callback_data: "cancel_action" }]
               ]
             }
           }
         );
 
       case "ETH → USDT":
+        swapStates[userId] = { step: "amount", swapType: "eth_to_usdt" };
         return bot.sendMessage(
           chatId,
           `🔄 ETH to USDT Swap\n\n` +
@@ -2010,14 +1839,14 @@ async function handleMessage(msg) {
           {
             reply_markup: {
               inline_keyboard: [
-                [{ text: "🔄 Start Swap", callback_data: "swap_eth_to_usdt" }],
-                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+                [{ text: "❌ Cancel", callback_data: "cancel_action" }]
               ]
             }
           }
         );
 
       case "SOL → USDT":
+        swapStates[userId] = { step: "amount", swapType: "sol_to_usdt" };
         return bot.sendMessage(
           chatId,
           `🔄 SOL to USDT Swap\n\n` +
@@ -2026,14 +1855,14 @@ async function handleMessage(msg) {
           {
             reply_markup: {
               inline_keyboard: [
-                [{ text: "🔄 Start Swap", callback_data: "swap_sol_to_usdt" }],
-                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+                [{ text: "❌ Cancel", callback_data: "cancel_action" }]
               ]
             }
           }
         );
 
       case "USDT → BTC":
+        swapStates[userId] = { step: "amount", swapType: "usdt_to_btc" };
         return bot.sendMessage(
           chatId,
           `🔄 USDT to BTC Swap\n\n` +
@@ -2042,14 +1871,14 @@ async function handleMessage(msg) {
           {
             reply_markup: {
               inline_keyboard: [
-                [{ text: "🔄 Start Swap", callback_data: "swap_usdt_to_btc" }],
-                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+                [{ text: "❌ Cancel", callback_data: "cancel_action" }]
               ]
             }
           }
         );
 
       case "USDT → ETH":
+        swapStates[userId] = { step: "amount", swapType: "usdt_to_eth" };
         return bot.sendMessage(
           chatId,
           `🔄 USDT to ETH Swap\n\n` +
@@ -2058,14 +1887,14 @@ async function handleMessage(msg) {
           {
             reply_markup: {
               inline_keyboard: [
-                [{ text: "🔄 Start Swap", callback_data: "swap_usdt_to_eth" }],
-                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+                [{ text: "❌ Cancel", callback_data: "cancel_action" }]
               ]
             }
           }
         );
 
       case "USDT → SOL":
+        swapStates[userId] = { step: "amount", swapType: "usdt_to_sol" };
         return bot.sendMessage(
           chatId,
           `🔄 USDT to SOL Swap\n\n` +
@@ -2074,8 +1903,7 @@ async function handleMessage(msg) {
           {
             reply_markup: {
               inline_keyboard: [
-                [{ text: "🔄 Start Swap", callback_data: "swap_usdt_to_sol" }],
-                [{ text: "⬅️ Back", callback_data: "back_to_menu" }]
+                [{ text: "❌ Cancel", callback_data: "cancel_action" }]
               ]
             }
           }
@@ -2157,10 +1985,11 @@ async function handleMessage(msg) {
 
       case "⬅️ Back to Main Menu":
         delete swapStates[userId];
+        delete withdrawStates[userId];
+        delete bankAccountStates[userId];
         return bot.sendMessage(chatId, "🏠 Main Menu", defaultKeyboard);
 
       default:
-        // Check if it's a deposit command
         if (text.startsWith("📥 Deposit")) {
           const cryptoMatch = text.match(/📥 Deposit (\w+)/);
           if (cryptoMatch) {
@@ -2183,7 +2012,7 @@ async function handleMessage(msg) {
 }
 
 // ===============================
-// EXPRESS SETUP
+// EXPRESS ROUTES FOR VERCEL
 // ===============================
 
 // Health check endpoint
@@ -2199,7 +2028,6 @@ app.get("/", (req, res) => {
     },
     banks: {
       loaded: NIGERIAN_BANKS.length,
-      total: NIGERIAN_BANKS.length
     },
     uptime: process.uptime()
   });
@@ -2211,17 +2039,12 @@ app.get("/debug", async (req, res) => {
     const info = webhookUrl ? await bot.getWebHookInfo() : { url: "No webhook" };
     res.json({
       webhook: info,
-      bot: {
-        username: (await bot.getMe()).username
-      },
       hd_wallet: {
         master_address: walletSystem.masterNode.address,
         total_users: walletSystem.userAddresses.size,
-        addresses_generated: walletSystem.addressToUser.size
       },
       banks: {
         loaded: NIGERIAN_BANKS.length,
-        sample: NIGERIAN_BANKS.slice(0, 3)
       }
     });
   } catch (error) {
@@ -2239,8 +2062,8 @@ app.get("/banks", (req, res) => {
   });
 });
 
-// Webhook endpoint for Telegram
-app.post("/webhook", (req, res) => {
+// Vercel API endpoint for webhook
+app.post("/api/webhook", async (req, res) => {
   console.log("📥 Telegram webhook received");
   
   // Immediately respond to Telegram
@@ -2263,7 +2086,7 @@ app.post("/webhook", (req, res) => {
 });
 
 // Crypto deposit webhook endpoint
-app.post("/crypto-webhook", async (req, res) => {
+app.post("/api/crypto-webhook", async (req, res) => {
   try {
     console.log('💰 Crypto webhook received:', req.body);
     
@@ -2274,10 +2097,19 @@ app.post("/crypto-webhook", async (req, res) => {
       
       if (userInfo) {
         const { userId, cryptoType } = userInfo;
-        await blockchainMonitor.processDeposit(userId, cryptoType, amount, txHash);
-        console.log(`✅ Deposit processed: ${userId}, ${amount} ${cryptoType}`);
-      } else {
-        console.log(`❓ Unknown address: ${address}`);
+        if (users[userId]) {
+          users[userId][cryptoType] = (users[userId][cryptoType] || 0) + parseFloat(amount);
+          
+          await bot.sendMessage(
+            userId,
+            `💰 Deposit Confirmed!\n\n` +
+            `Amount: ${amount} ${cryptoType.toUpperCase()}\n` +
+            `Transaction: ${txHash.slice(0, 20)}...\n` +
+            `New Balance: ${users[userId][cryptoType]} ${cryptoType.toUpperCase()}\n\n` +
+            `✅ Funds have been added to your account.`,
+            { parse_mode: 'Markdown' }
+          );
+        }
       }
     }
     
@@ -2289,7 +2121,7 @@ app.post("/crypto-webhook", async (req, res) => {
 });
 
 // Webhook endpoint for Flutterwave
-app.post("/transfer-webhook", async (req, res) => {
+app.post("/api/transfer-webhook", async (req, res) => {
   try {
     console.log('💰 Flutterwave webhook received:', req.body.event);
     res.sendStatus(200);
@@ -2299,72 +2131,57 @@ app.post("/transfer-webhook", async (req, res) => {
   }
 });
 
-// ===============================
-// START SERVER
-// ===============================
-const PORT = process.env.PORT || 5000;
+// Export for Vercel
+module.exports = app;
 
-app.listen(PORT, async () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🌐 Webhook URL: ${webhookUrl}`);
-  console.log(`💰 Master Wallet: ${walletSystem.masterNode.address}`);
-  
-  // Load banks on startup
+// ===============================
+// INITIALIZATION
+// ===============================
+async function initialize() {
   try {
+    // Get bot info
+    const me = await bot.getMe();
+    console.log(`🤖 Bot connected: @${me.username}`);
+    
+    // Load banks
     console.log("🏦 Loading Nigerian banks...");
     NIGERIAN_BANKS = await paymentProcessor.getBanks();
     console.log(`✅ Loaded ${NIGERIAN_BANKS.length} Nigerian banks`);
-  } catch (error) {
-    console.error(`⚠️ Using fallback bank list: ${error.message}`);
-    NIGERIAN_BANKS = Object.entries(BANK_CODES).map(([name, code]) => ({ 
-      name, 
-      code, 
-      id: code 
-    }));
-    console.log(`✅ Using ${NIGERIAN_BANKS.length} fallback banks`);
-  }
-  
-  // Setup webhook if we have a URL
-  if (webhookUrl) {
-    const webhookResult = await setupWebhook();
-    if (webhookResult) {
-      console.log(`✅ Webhook setup successful: ${webhookUrl}`);
+    
+    // Setup webhook if we have a URL
+    if (webhookUrl) {
+      const webhookResult = await setupWebhook();
+      if (webhookResult) {
+        console.log(`✅ Webhook setup successful: ${webhookUrl}`);
+      } else {
+        console.log("⚠️ Webhook setup failed, running in polling mode");
+        bot.startPolling();
+      }
+    } else {
+      console.log("⚠️ No webhook URL, running in polling mode");
+      bot.startPolling();
     }
-  } else {
-    console.log("⚠️ Running without webhook - using polling");
-    // Fallback to polling if no webhook
-    bot.startPolling();
-    console.log("✅ Started polling mode");
+    
+    console.log(`\n🤖 ${BUSINESS_NAME} Bot Ready!\n`);
+    console.log(`📊 Features:`);
+    console.log(`  • HD Wallets: ✅`);
+    console.log(`  • Bank Support: ✅ (${NIGERIAN_BANKS.length} banks)`);
+    console.log(`  • Flutterwave: ${FLW_SECRET_KEY ? '✅ Connected' : '❌ Disabled'}`);
+    console.log(`  • Webhook: ${webhookUrl ? '✅ Enabled' : '❌ Polling mode'}`);
+    
+  } catch (error) {
+    console.error("❌ Initialization error:", error);
   }
-  
-  console.log(`\n🤖 ${BUSINESS_NAME} Bot Ready!\n`);
-  console.log(`📊 Features:`);
-  console.log(`  • HD Wallets: ✅`);
-  console.log(`  • Bank Support: ✅ (${NIGERIAN_BANKS.length} banks)`);
-  console.log(`  • Flutterwave: ${FLW_SECRET_KEY ? '✅ Connected' : '❌ Disabled'}`);
-  console.log(`  • Webhook: ${webhookUrl ? '✅ Enabled' : '❌ Polling mode'}`);
-  console.log(`\n🔗 Debug URLs:`);
-  console.log(`  • Status: https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co`);
-  console.log(`  • Banks: https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/banks`);
-  console.log(`  • Debug: https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/debug`);
-});
+}
 
-// Keep alive for Replit
-setInterval(() => {
-  const domain = process.env.REPL_SLUG && process.env.REPL_OWNER 
-    ? `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co`
-    : `http://localhost:${PORT}`;
-  
-  axios.get(domain)
-    .then(() => console.log('🏓 Keep alive ping successful'))
-    .catch(err => console.log('🏓 Keep alive ping failed:', err.message));
-}, 300000);
-
-// Handle uncaught errors
-process.on('uncaughtException', (error) => {
-  console.error('❌ Uncaught Exception:', error);
-});
-
-process.on('unhandledRejection', (error) => {
-  console.error('❌ Unhandled Rejection:', error);
-});
+// Start initialization
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    initialize();
+  });
+} else {
+  // For Vercel, just initialize
+  initialize();
+}
